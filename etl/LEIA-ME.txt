@@ -1,0 +1,48 @@
+===========================================================================
+ REPOSICOES E CHAMADOS - Lube Distribuidora
+ O que e cada pasta daqui
+===========================================================================
+
+Esta pasta e a CAIXA: e daqui que o instalador leva tudo para a maquina que
+roda de verdade (C:\BI\REPOSICOES).
+
+Mexeu em alguma coisa aqui? Rode o "INSTALAR TUDO.bat" de novo, senao a
+maquina continua com a versao antiga.
+
+---------------------------------------------------------------------------
+ 1 - CONFIGURACAO
+---------------------------------------------------------------------------
+ ENV ............... as senhas e enderecos: Oracle do WinThor (so leitura) e
+                     Supabase (DATA WAREHOUSE).
+ ENV.example ....... o mesmo arquivo, sem senha, explicando cada linha.
+
+ Edite o ENV AQUI, nao o da maquina: o instalador copia este por cima.
+
+---------------------------------------------------------------------------
+ 2 - SISTEMA REPOSICOES
+---------------------------------------------------------------------------
+ Leva as rotinas 8352 (Pedido de Reposicao) e 8353 (Relatorio Geral de
+ Chamados) do WinThor para o painel da internet. A carga inteira leva uns 10
+ segundos e roda sozinha pelo Agendador de Tarefas.
+
+ sync_reposicao.py ........... o programa principal.
+ consultas_reposicao.py ...... as 3 consultas SQL e a leitura da NF de
+                               referencia nas observacoes do pedido.
+ diagnostico_reposicao.py .... roda tudo SEM gravar e confere o recorte de
+                               2026 contra a planilha consolidada.
+ executar.py ................. inicializador a prova de silencio: se algo
+                               quebrar antes do log existir, o motivo vai
+                               para falha_inicial.log.
+
+---------------------------------------------------------------------------
+ 3 - INSTALACAO
+---------------------------------------------------------------------------
+ instalar_e_agendar.ps1 ...... copia tudo para C:\BI\REPOSICOES e cria a
+                               tarefa "Reposicoes - Sync": 07:35, 09:35,
+                               11:35, 13:35, 15:35, 17:35 e 22:35.
+
+---------------------------------------------------------------------------
+ COMO SABER SE A CARGA ENTROU
+---------------------------------------------------------------------------
+ Nao pelo log. Pelo banco: tabela reposicao.controle_carga, no Supabase
+ (projeto DATA WAREHOUSE). Uma linha por consulta, com status e horario.
