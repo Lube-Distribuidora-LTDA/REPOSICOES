@@ -17,7 +17,7 @@ Ambas rodam no módulo de relatórios personalizados (`PCSIS800`). O ETL não ex
 
 ## O que o painel mostra
 
-Cinco páginas, menu lateral, filtros fixos no topo (**período · motivo · com/sem chamado · motorista**, e filial):
+Cinco páginas, menu lateral, filtros fixos no topo (**período · motivo · com/sem chamado · motorista · cliente**, e filial):
 
 | Página | O que responde |
 |---|---|
@@ -26,6 +26,21 @@ Cinco páginas, menu lateral, filtros fixos no topo (**período · motivo · com
 | **Itens** | Itens (ou fornecedores) por **valor**, por **volume** (unidades) e por **recorrência** (em quantas reposições e meses aparecem) |
 | **Motoristas** | Chamados e valor reposto por motorista, com o principal motivo de cada um |
 | **Detalhe** | Linha a linha, com busca e **exportação para Excel** (`.xlsx` formatado, com os filtros escritos dentro) |
+
+### Clique em qualquer número: abre o Detalhe já filtrado
+
+Todo cartão, barra, ponto, ranking, média anual e linha de tabela leva ao **Detalhe** com o recorte que ele representa — por exemplo, clicar em "Falta de mercadoria" abre o Detalhe só com esse motivo; clicar na parte "sem chamado" da coluna de abril abre abril com `Sem chamado`; clicar em um item abre só aquele item (a faixa sob os filtros mostra o recorte e deixa tirá-lo). O botão **← Voltar** devolve a tela de onde o clique saiu, com os filtros que ela tinha.
+
+| Clique | O que o Detalhe mostra |
+|---|---|
+| Cartão "Total", "Acumulado", "Média mensal" | o período dos filtros (o acumulado, de 1º de janeiro ao fim do período) |
+| "Com chamado" / "Sem chamado" | só reposições com / sem chamado |
+| "Cliente que mais fez reposições" | só aquele cliente |
+| Coluna do gráfico mensal | aquele mês; clicando em uma cor, também com ou sem chamado (ou aquele motivo) |
+| Ponto do acumulado | de janeiro até aquele mês |
+| Motivo, cliente, motorista, item ou fornecedor em rankings e tabelas | só aquele |
+
+Ao passar o mouse nos gráficos aparece um cartão com o valor de cada série, o total, a quantidade de reposições e o percentual com chamado. **SKU** (tabela de Motivos) é o número de produtos distintos — não de linhas de item.
 
 ## A regra de ligação entre reposição e chamado
 

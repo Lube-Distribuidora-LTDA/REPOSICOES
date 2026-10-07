@@ -89,6 +89,9 @@ var E = {
   pagina: "geral",
   de: "", ate: "", preset: "ano",
   motivos: new Set(), motoristas: new Set(), filiais: new Set(),
+  clientes: new Set(),              // filtro do cabeçalho
+  produtos: new Set(), fornecs: new Set(),   // vêm do clique em um item ou fornecedor (faixa abaixo dos filtros)
+  voltar: null,                     // foto dos filtros e da página antes de um clique que levou ao Detalhe
   chamado: "todos",                 // todos | com | sem
   itensVisao: "produto",            // produto | fornecedor
   itensOrdem: "valor",              // valor | volume | recorrencia
@@ -143,8 +146,13 @@ function nomeMotorista(i) { var x = D.dims.motoristas[i]; return x ? x[1] : "—
 /* ---------------------------------------------------------------------------
  * Filtros
  * ------------------------------------------------------------------------ */
+/* quem/o quê: filial, cliente, item e fornecedor recortam as REPOSIÇÕES (valem também para o denominador dos percentuais) */
+function passaDim(r) {
+  return (!E.filiais.size || E.filiais.has(r.f)) && (!E.clientes.size || E.clientes.has(r.c)) &&
+         (!E.produtos.size || E.produtos.has(r.p)) && (!E.fornecs.size || E.fornecs.has(r.fo));
+}
 function passaBase(r) {
-  return r.d >= E.de && r.d <= E.ate && (!E.filiais.size || E.filiais.has(r.f));
+  return r.d >= E.de && r.d <= E.ate && passaDim(r);
 }
 function passaChamado(r) {
   if (E.chamado === "com" && !r.ch) return false;
@@ -154,7 +162,7 @@ function passaChamado(r) {
   return true;
 }
 function passaSemPeriodo(r) {
-  return (!E.filiais.size || E.filiais.has(r.f)) && passaChamado(r);
+  return passaDim(r) && passaChamado(r);
 }
 function contexto() {
   var B = [], F = [];
@@ -221,16 +229,143 @@ function descricaoFiltros() {
   f.push(["Motivos", E.motivos.size ? Array.from(E.motivos).map(nomeMotivo).join("; ") : "todos"]);
   f.push(["Chamado", E.chamado === "com" ? "só reposições COM chamado" : E.chamado === "sem" ? "só reposições SEM chamado" : "com e sem chamado"]);
   f.push(["Motoristas", E.motoristas.size ? Array.from(E.motoristas).map(nomeMotorista).join("; ") : "todos"]);
+  f.push(["Clientes", E.clientes.size ? Array.from(E.clientes).map(nomeCliente).join("; ") : "todos"]);
+  if (E.produtos.size) f.push(["Itens", Array.from(E.produtos).map(nomeProduto).join("; ")]);
+  if (E.fornecs.size) f.push(["Fornecedores", Array.from(E.fornecs).map(nomeFornecedor).join("; ")]);
   f.push(["Filiais", E.filiais.size ? Array.from(E.filiais).sort().join(", ") : "todas"]);
   return f;
 }
+
+/* ---------------------------------------------------------------------------
+ * Clique: todo cartão, barra, ponto, ranking e linha leva ao Detalhe JÁ FILTRADO
+ *
+ * `detalhar(mudar, ordem)` guarda uma foto dos filtros e da página, aplica a
+ * mudança e abre o Detalhe. O botão "Voltar" (faixa abaixo dos filtros) restaura
+ * a foto. Clicar no menu lateral descarta a foto: quem navega livre não precisa dela.
+ * ------------------------------------------------------------------------ */
+function copiarEstado() {
+  return {
+    pagina: E.pagina, de: E.de, ate: E.ate, preset: E.preset, chamado: E.chamado,
+    motivos: new Set(E.motivos), motoristas: new Set(E.motoristas), filiais: new Set(E.filiais),
+    clientes: new Set(E.clientes), produtos: new Set(E.produtos), fornecs: new Set(E.fornecs)
+  };
+}
+function aplicarEstado(x) {
+  E.pagina = x.pagina; E.de = x.de; E.ate = x.ate; E.preset = x.preset; E.chamado = x.chamado;
+  ["motivos", "motoristas", "filiais", "clientes", "produtos", "fornecs"].forEach(function (k) {
+    E[k].clear();                       // os Sets são os mesmos que os seletores do cabeçalho seguram
+    x[k].forEach(function (v) { E[k].add(v); });
+  });
+}
+function irPara(id) {
+  E.pagina = id;
+  history.replaceState(null, "", "#" + id);
+  $("side").classList.remove("aberto"); $("veu").style.display = "";
+  construirMenu();
+  window.scrollTo({ top: 0 });
+}
+function detalhar(mudar, ordem) {
+  var antes = copiarEstado();
+  if (mudar) mudar();
+  E.voltar = antes;
+  E.T.detalhe = ordem ? { q: "", col: ordem[0], dir: ordem[1], pag: 1 } : null;
+  Dica.esconder();
+  irPara("detalhe");
+  sincronizar();
+  desenhar();
+}
+function voltar() {
+  var x = E.voltar;
+  if (!x) return;
+  E.voltar = null;
+  aplicarEstado(x);
+  Dica.esconder();
+  irPara(x.pagina);
+  sincronizar();
+  desenhar();
+}
+function definirPeriodo(de, ate) {
+  E.de = de < MIND ? MIND : de;
+  E.ate = ate > MAXD ? MAXD : ate;
+  if (E.de > E.ate) E.de = E.ate;
+  E.preset = "";
+}
+function periodoMes(ym) { definirPeriodo(ym + "-01", ultimoDia(ym)); }
+function so(conjunto, valor) { conjunto.clear(); conjunto.add(valor); }
+function ligarClique(no, fn) {
+  no.tabIndex = 0;
+  no.setAttribute("role", "button");
+  no.addEventListener("click", fn);
+  no.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fn(e); }
+  });
+}
+/* colunas da tabela do Detalhe, para abrir já ordenado */
+var COL_DET = { data: 0, cliente: 4, produto: 5, unid: 6, valor: 7, chamado: 8 };
+
+/* ---------------------------------------------------------------------------
+ * Tooltip: um cartão só, que acompanha o mouse e mostra o que cada ponto vale
+ * ------------------------------------------------------------------------ */
+var Dica = (function () {
+  var no = null;
+  function garantir() {
+    if (!no) { no = el("div", "dica"); document.body.appendChild(no); }
+    return no;
+  }
+  function montar(c) {
+    var n = garantir();
+    limpar(n);
+    var cab = el("div", "dica-cab");
+    cab.appendChild(el("span", "dica-titulo", c.titulo));
+    if (c.sub) cab.appendChild(el("span", "dica-sub", c.sub));
+    n.appendChild(cab);
+    (c.linhas || []).forEach(function (l) {
+      var r = el("div", "dica-linha");
+      var i = el("i");
+      if (l.cor) i.style.background = l.cor; else i.style.visibility = "hidden";
+      r.appendChild(i);
+      r.appendChild(el("span", "dica-nome", l.nome));
+      r.appendChild(el("b", null, l.valor));
+      n.appendChild(r);
+    });
+    if (c.total) {
+      var t = el("div", "dica-linha total");
+      t.appendChild(el("span", "dica-nome", c.total.nome));
+      t.appendChild(el("b", null, c.total.valor));
+      n.appendChild(t);
+    }
+    (c.extra || []).forEach(function (x) { n.appendChild(el("div", "dica-extra", x)); });
+    if (c.clique) n.appendChild(el("div", "dica-clique", "↗ " + c.clique));
+  }
+  function mover(e) {
+    var n = garantir(), w = n.offsetWidth, h = n.offsetHeight;
+    var x = e.clientX + 18, y = e.clientY + 18;
+    if (x + w > window.innerWidth - 10) x = e.clientX - w - 18;
+    if (y + h > window.innerHeight - 10) y = e.clientY - h - 18;
+    n.style.left = Math.max(8, x) + "px";
+    n.style.top = Math.max(8, y) + "px";
+  }
+  function mostrar(c, e) { montar(c); garantir().classList.add("on"); mover(e); }
+  function esconder() { if (no) no.classList.remove("on"); }
+  function anexar(alvo, fn) {
+    alvo.addEventListener("mouseenter", function (e) { var c = fn(); if (c) mostrar(c, e); });
+    /* depois de rolar a página o tooltip some; basta mexer o mouse para ele voltar */
+    alvo.addEventListener("mousemove", function (e) {
+      if (no && no.classList.contains("on")) { mover(e); return; }
+      var c = fn(); if (c) mostrar(c, e);
+    });
+    alvo.addEventListener("mouseleave", esconder);
+  }
+  window.addEventListener("scroll", esconder, { passive: true });
+  return { anexar: anexar, esconder: esconder };
+})();
 
 /* ---------------------------------------------------------------------------
  * Cálculos
  * ------------------------------------------------------------------------ */
 function resumir(F, B) {
   var ped = new Set(), pedCom = new Set(), pedComB = new Set(), pedB = new Set(), it = new Set(),
-      cli = new Set(), cham = new Set(), seen = new Set(), lags = [],
+      cli = new Set(), cham = new Set(), seen = new Set(), lags = [], sku = new Set(),
       v = 0, q = 0, vCom = 0, vSem = 0, vB = 0, qr = 0, i, r;
   for (i = 0; i < B.length; i++) {
     r = B[i]; pedB.add(r.pd); vB += r.v;
@@ -239,7 +374,7 @@ function resumir(F, B) {
   var pedSem = new Set();
   for (i = 0; i < F.length; i++) {
     r = F[i];
-    ped.add(r.pd); it.add(r.ik); cli.add(r.c); v += r.v; q += r.q;
+    ped.add(r.pd); it.add(r.ik); sku.add(r.p); cli.add(r.c); v += r.v; q += r.q;
     if (r.ch) {
       pedCom.add(r.pd); cham.add(r.ch); vCom += r.v; qr += r.qr;
       var k = r.pd + "/" + r.ch;
@@ -252,7 +387,7 @@ function resumir(F, B) {
   return {
     v: v, q: q, vCom: vCom, vSem: vSem, vB: vB, qr: qr,
     ped: ped.size, pedCom: pedCom.size, pedSem: pedSem.size, pedB: pedB.size,
-    itens: it.size, clientes: cli.size, chamados: cham.size,
+    itens: it.size, sku: sku.size, clientes: cli.size, chamados: cham.size,
     lagMed: mediana(lags),
     pctPed: pedB.size ? pedCom.size / pedB.size : 0,
     pctVal: vB ? vCom / vB : 0
@@ -298,7 +433,7 @@ function somaPeriodo(de, ate) {
 function mediaAnual() {
   var porAno = {};
   R.forEach(function (r) {
-    if (E.filiais.size && !E.filiais.has(r.f)) return;
+    if (!passaDim(r)) return;
     var a = r.mes.slice(0, 4), g = porAno[a];
     if (!g) g = porAno[a] = { ped: new Set(), com: new Set(), v: 0, ate: "" };
     g.ped.add(r.pd); g.v += r.v;
@@ -318,11 +453,11 @@ function agrupar(rows, chave) {
     if (k == null) return;
     var g = M.get(k);
     if (!g) {
-      g = { k: k, v: 0, q: 0, qr: 0, ped: new Set(), it: new Set(), cli: new Set(), cham: new Set(), meses: new Set(), vCom: 0 };
+      g = { k: k, v: 0, q: 0, qr: 0, ped: new Set(), it: new Set(), sku: new Set(), cli: new Set(), cham: new Set(), meses: new Set(), vCom: 0 };
       M.set(k, g);
     }
     g.v += r.v; g.q += r.q; g.qr += r.qr;
-    g.ped.add(r.pd); g.it.add(r.ik); g.cli.add(r.c); g.meses.add(r.mes);
+    g.ped.add(r.pd); g.it.add(r.ik); g.sku.add(r.p); g.cli.add(r.c); g.meses.add(r.mes);
     if (r.ch) { g.cham.add(r.ch); g.vCom += r.v; }
   });
   return Array.from(M.values());
@@ -354,14 +489,15 @@ function painel(titulo, sub, corpo, acoes) {
   return p;
 }
 
-function kpi(cls, rotulo, valor, sub, ajuda) {
-  var k = el("div", "kpi " + (cls || ""));
+function kpi(cls, rotulo, valor, sub, ajuda, aoClicar) {
+  var k = el("div", "kpi " + (cls || "") + (aoClicar ? " clicavel" : ""));
   var l = el("div", "lbl");
   l.appendChild(document.createTextNode(rotulo));
   if (ajuda) {
     var a = el("span", "ajuda", "?");
     a.tabIndex = 0;
     a.appendChild(el("span", "tip", ajuda));
+    a.addEventListener("click", function (ev) { ev.stopPropagation(); });   // o "?" explica; não navega
     l.appendChild(a);
   }
   k.appendChild(l);
@@ -369,6 +505,7 @@ function kpi(cls, rotulo, valor, sub, ajuda) {
   var s = el("div", "sub");
   if (sub instanceof Node) s.appendChild(sub); else s.textContent = sub || "";
   k.appendChild(s);
+  if (aoClicar) ligarClique(k, aoClicar);
   return k;
 }
 
@@ -381,15 +518,14 @@ function delta(atual, anterior, rotulo) {
   return d;
 }
 
+/* item: { nome, valor, texto, sub, cor, aoClicar, dica } — `dica` troca o conteúdo padrão do tooltip */
 function rank(itens, empilhado) {
   var wrap = el("div", "rank" + (empilhado ? " empilhado" : ""));
   var max = Math.max.apply(null, itens.map(function (i) { return i.valor; }).concat([1e-9]));
   itens.forEach(function (it, i) {
-    var l = el("div", "rank-l");
+    var l = el("div", "rank-l" + (it.aoClicar ? " clicavel" : ""));
     l.appendChild(el("span", "rank-pos", String(i + 1)));
-    var nm = el("span", "rank-nome", it.nome);
-    nm.title = it.nome;
-    l.appendChild(nm);
+    l.appendChild(el("span", "rank-nome", it.nome));
     var tr = el("div", "rank-trilho"), b = el("div", "rank-barra");
     b.style.width = Math.max(1.5, it.valor / max * 100) + "%";
     b.style.background = it.cor || "var(--viz-1)";
@@ -397,8 +533,16 @@ function rank(itens, empilhado) {
     l.appendChild(tr);
     var val = el("span", "rank-val", it.texto);
     if (it.sub) val.appendChild(el("span", "rank-sub", it.sub));
-    if (it.tip) l.title = it.tip;
     l.appendChild(val);
+    if (it.aoClicar) ligarClique(l, it.aoClicar);
+    Dica.anexar(l, function () {
+      return it.dica || {
+        titulo: it.nome,
+        linhas: [{ cor: it.cor && it.cor.charAt(0) === "#" ? it.cor : null, nome: it.rotValor || "Valor", valor: it.tip || it.texto }],
+        extra: it.sub ? [it.sub] : [],
+        clique: it.aoClicar ? "Clique para abrir no Detalhe" : null
+      };
+    });
     wrap.appendChild(l);
   });
   return wrap;
@@ -448,8 +592,9 @@ function multi(cfg) {
     function montar() {
       limpar(lista);
       var termo = norm(inp.value), n = 0;
-      cfg.opcoes().forEach(function (o) {
-        if (termo && norm(o.nome).indexOf(termo) === -1) return;
+      var todas = cfg.opcoes().filter(function (o) { return !termo || norm(o.nome).indexOf(termo) !== -1; });
+      var visiveis = cfg.limite ? todas.slice(0, cfg.limite) : todas;
+      visiveis.forEach(function (o) {
         n++;
         var li = el("div", "multi-op" + (cfg.conjunto.has(o.id) ? " on" : ""));
         li.appendChild(el("span", "cx", "✓"));
@@ -464,6 +609,9 @@ function multi(cfg) {
         lista.appendChild(li);
       });
       if (!n) lista.appendChild(el("div", "multi-vazio", "Nada encontrado."));
+      else if (todas.length > visiveis.length) {
+        lista.appendChild(el("div", "multi-vazio", "Mostrando " + fInt(visiveis.length) + " de " + fInt(todas.length) + " — digite para buscar."));
+      }
     }
     inp.addEventListener("input", montar);
     limparBtn.addEventListener("click", function () { cfg.conjunto.clear(); montar(); atualizar(); cfg.aoMudar(); });
@@ -582,6 +730,11 @@ function tabela(cfg) {
     var ini = (st.pag - 1) * tam;
     rows.slice(ini, ini + tam).forEach(function (r) {
       var tr = el("tr", cfg.classeLinha ? cfg.classeLinha(r) : "");
+      if (cfg.aoClicar) {
+        tr.classList.add("clicavel");
+        tr.title = "Clique para abrir no Detalhe";
+        tr.addEventListener("click", function () { cfg.aoClicar(r); });
+      }
       cfg.colunas.forEach(function (c) {
         var td = el("td", (numerica(c) ? "n" : "") + (c.corta ? " corta" : ""));
         var t = texto(c, r);
@@ -668,7 +821,9 @@ function Colisao() {
   };
 }
 
-/* barras empilhadas, com o total em cima de cada coluna */
+/* barras empilhadas, com o total em cima de cada coluna.
+ * cats[i]:   { rot, dica, tip, aoClicar }   tip = conteúdo do tooltip (ver Dica); sem ele, monta um padrão
+ * series[k]: { nome, cor, txt, valores, aoClicarSeg(i) }  clique numa cor específica da coluna */
 function graficoBarras(box, c) {
   var n = c.cats.length, H = c.altura || 310, mL = 64, mR = 16, mT = 32, mB = 40;
   if (c.ref) mR = 18 + c.ref.rot.length * 6.4;
@@ -685,37 +840,47 @@ function graficoBarras(box, c) {
     svg.appendChild(S("text", { x: mL - 8, y: y(t) + 3.5, "text-anchor": "end", "class": "eixo" }, c.fmtEixo(t)));
   });
 
+  function dicaPadrao(i) {
+    var cat = c.cats[i], linhas = [];
+    c.series.forEach(function (se) { if (se.valores[i]) linhas.push({ cor: se.cor, nome: se.nome, valor: c.fmtCheio(se.valores[i]) }); });
+    return { titulo: cat.dica || cat.rot, linhas: linhas, total: { nome: "Total", valor: c.fmtCheio(totais[i]) } };
+  }
+
   var bw = Math.min(54, slot * 0.66);
   c.cats.forEach(function (cat, i) {
-    var g = S("g", { "class": "col" });
-    var dica = [cat.dica || cat.rot];
-    c.series.forEach(function (se) { if (se.valores[i]) dica.push(se.nome + ": " + c.fmtCheio(se.valores[i])); });
-    dica.push("Total: " + c.fmtCheio(totais[i]));
-    g.appendChild(S("title", {}, dica.join("\n")));
+    var g = S("g", { "class": "col" + (cat.aoClicar ? " clicavel" : "") });
+    /* faixa clara atrás da coluna: mostra qual coluna o tooltip descreve e aumenta a área de clique */
+    g.appendChild(S("rect", { x: mL + slot * i + 2, y: 4, width: slot - 4, height: H - 8, rx: 9, "class": "banda" }));
     var x = mL + slot * i + (slot - bw) / 2, acum = 0;
     c.series.forEach(function (se) {
       var v = se.valores[i] || 0;
       if (v <= 0) return;
       var y1 = y(acum + v), y0 = y(acum), h = y0 - y1;
-      g.appendChild(S("rect", { x: x, y: y1, width: bw, height: Math.max(h, 0.6), rx: 2, fill: se.cor, "class": "barra" }));
+      var rect = S("rect", { x: x, y: y1, width: bw, height: Math.max(h, 0.6), rx: 2, fill: se.cor, "class": "barra" + (se.aoClicarSeg ? " seg-clicavel" : "") });
+      if (se.aoClicarSeg) rect.addEventListener("click", function (ev) { ev.stopPropagation(); se.aoClicarSeg(i); });
+      g.appendChild(rect);
       if (h >= 15 && bw >= 38) {
-        g.appendChild(S("text", { x: x + bw / 2, y: y1 + h / 2 + 3.5, "text-anchor": "middle", "class": "rot-seg", fill: se.txt || "#0b1020" }, c.fmtSeg(v)));
+        g.appendChild(S("text", { x: x + bw / 2, y: y1 + h / 2 + 3.5, "text-anchor": "middle", "class": "rot-seg", fill: se.txt || "#0b1020", "pointer-events": "none" }, c.fmtSeg(v)));
       }
       acum += v;
     });
-    if (totais[i] > 0) g.appendChild(S("text", { x: x + bw / 2, y: y(totais[i]) - 7, "text-anchor": "middle", "class": "rot-total" }, c.fmtSeg(totais[i])));
-    g.appendChild(S("text", { x: x + bw / 2, y: H - mB + 18, "text-anchor": "middle", "class": "eixo-x" }, cat.rot));
+    if (totais[i] > 0) g.appendChild(S("text", { x: x + bw / 2, y: y(totais[i]) - 7, "text-anchor": "middle", "class": "rot-total", "pointer-events": "none" }, c.fmtSeg(totais[i])));
+    g.appendChild(S("text", { x: x + bw / 2, y: H - mB + 18, "text-anchor": "middle", "class": "eixo-x", "pointer-events": "none" }, cat.rot));
+    if (cat.aoClicar) g.addEventListener("click", cat.aoClicar);
+    Dica.anexar(g, function () { return cat.tip || dicaPadrao(i); });
     svg.appendChild(g);
   });
 
   if (c.ref && c.ref.valor > 0) {
-    svg.appendChild(S("line", { x1: mL, x2: W - mR + 4, y1: y(c.ref.valor), y2: y(c.ref.valor), stroke: "var(--ouro)", "stroke-width": 1.6, "stroke-dasharray": "6 5", opacity: 0.9 }));
+    svg.appendChild(S("line", { x1: mL, x2: W - mR + 4, y1: y(c.ref.valor), y2: y(c.ref.valor), stroke: "var(--ouro)", "stroke-width": 1.6, "stroke-dasharray": "6 5", opacity: 0.9, "pointer-events": "none" }));
     svg.appendChild(S("text", { x: W - mR + 9, y: y(c.ref.valor) + 4, "text-anchor": "start", "class": "rot-linha", fill: "var(--ouro-forte)" }, c.ref.rot));
   }
   box.appendChild(svg);
 }
 
-/* linhas com marcadores e rótulo em cada ponto */
+/* linhas com marcadores e rótulo em cada ponto.
+ * O tooltip é por MÊS (todas as séries daquele mês juntas), e a faixa inteira da coluna é a área de mira —
+ * não é preciso acertar o pontinho. */
 function graficoLinhas(box, c) {
   var n = c.cats.length, H = c.altura || 300, mL = 64, mR = 22, mT = 30, mB = 40;
   if (c.ref) mR = 24 + c.ref.rot.length * 6.4;
@@ -729,14 +894,10 @@ function graficoLinhas(box, c) {
     svg.appendChild(S("line", { x1: mL, x2: W - mR, y1: y(t), y2: y(t), "class": "grade" }));
     svg.appendChild(S("text", { x: mL - 8, y: y(t) + 3.5, "text-anchor": "end", "class": "eixo" }, c.fmtEixo(t)));
   });
-  c.cats.forEach(function (cat, i) {
-    svg.appendChild(S("text", { x: x(i), y: H - mB + 18, "text-anchor": "middle", "class": "eixo-x" }, cat.rot));
-  });
   if (c.ref != null) {
     svg.appendChild(S("line", { x1: mL, x2: W - mR + 4, y1: y(c.ref.valor), y2: y(c.ref.valor), stroke: "var(--ouro)", "stroke-width": 1.6, "stroke-dasharray": "6 5", opacity: 0.9 }));
     svg.appendChild(S("text", { x: W - mR + 9, y: y(c.ref.valor) + 4, "text-anchor": "start", "class": "rot-linha", fill: "var(--ouro-forte)" }, c.ref.rot));
   }
-  var cabe = Colisao();
   c.series.forEach(function (se) {
     var d = "", ant = false;
     se.valores.forEach(function (v, i) {
@@ -744,25 +905,42 @@ function graficoLinhas(box, c) {
       d += (ant ? "L" : "M") + x(i).toFixed(1) + " " + y(v).toFixed(1);
       ant = true;
     });
-    svg.appendChild(S("path", { d: d, fill: "none", stroke: se.cor, "stroke-width": se.larg || 2.6, "stroke-linejoin": "round", "stroke-linecap": "round", "stroke-dasharray": se.tracejado ? "5 5" : "none", opacity: se.opaco || 1 }));
+    svg.appendChild(S("path", { d: d, fill: "none", stroke: se.cor, "stroke-width": se.larg || 2.6, "stroke-linejoin": "round", "stroke-linecap": "round", "stroke-dasharray": se.tracejado ? "5 5" : "none", opacity: se.opaco || 1, "pointer-events": "none" }));
   });
+
+  /* decide os rótulos na ordem das séries (a principal por último ganha o lugar), antes de desenhar por mês */
+  var cabe = Colisao(), rotulos = c.cats.map(function () { return []; });
   c.series.forEach(function (se) {
     se.valores.forEach(function (v, i) {
       if (v == null) return;
-      var g = S("g", { "class": "col" });
-      g.appendChild(S("title", {}, (se.nome ? se.nome + " · " : "") + c.cats[i].rot + ": " + c.fmtCheio(v)));
-      g.appendChild(S("circle", { cx: x(i), cy: y(v), r: 4, fill: "var(--navy-900)", stroke: se.cor, "stroke-width": 2.4, "class": "pt" }));
       var txt = c.fmt(v), w = txt.length * 6.3 + 4;
-      var ehUltimo = i === se.valores.length - 1 || se.valores.slice(i + 1).every(function (z) { return z == null; });
-      var mostrar = se.rotulos === "todos" || (se.rotulos === "fim" && ehUltimo);
-      if (mostrar) {
-        var ly = se.rotulos === "fim" || se.abaixo ? y(v) + 17 : y(v) - 10;
-        if (cabe(x(i), ly - 3, w, 12)) {
-          g.appendChild(S("text", { x: x(i), y: ly, "text-anchor": "middle", "class": "rot-linha", fill: se.corTxt || se.cor }, txt));
-        }
-      }
-      svg.appendChild(g);
+      var ehUltimo = se.valores.slice(i + 1).every(function (z) { return z == null; });
+      if (!(se.rotulos === "todos" || (se.rotulos === "fim" && ehUltimo))) return;
+      var ly = se.rotulos === "fim" || se.abaixo ? y(v) + 17 : y(v) - 10;
+      if (cabe(x(i), ly - 3, w, 12)) rotulos[i].push({ x: x(i), y: ly, txt: txt, cor: se.corTxt || se.cor });
     });
+  });
+
+  function dicaPadrao(i) {
+    var linhas = [];
+    c.series.forEach(function (se) { if (se.valores[i] != null) linhas.push({ cor: se.cor, nome: se.nome, valor: c.fmtCheio(se.valores[i]) }); });
+    return { titulo: c.cats[i].dica || c.cats[i].rot, linhas: linhas };
+  }
+  c.cats.forEach(function (cat, i) {
+    var g = S("g", { "class": "col" + (cat.aoClicar ? " clicavel" : "") });
+    g.appendChild(S("rect", { x: mL + slot * i + 2, y: 4, width: slot - 4, height: H - 8, rx: 9, "class": "banda" }));
+    c.series.forEach(function (se) {
+      var v = se.valores[i];
+      if (v == null) return;
+      g.appendChild(S("circle", { cx: x(i), cy: y(v), r: 4, fill: "var(--navy-900)", stroke: se.cor, "stroke-width": 2.4, "class": "pt" }));
+    });
+    rotulos[i].forEach(function (r) {
+      g.appendChild(S("text", { x: r.x, y: r.y, "text-anchor": "middle", "class": "rot-linha", fill: r.cor, "pointer-events": "none" }, r.txt));
+    });
+    g.appendChild(S("text", { x: x(i), y: H - mB + 18, "text-anchor": "middle", "class": "eixo-x", "pointer-events": "none" }, cat.rot));
+    if (cat.aoClicar) g.addEventListener("click", cat.aoClicar);
+    Dica.anexar(g, function () { return cat.tip || dicaPadrao(i); });
+    svg.appendChild(g);
   });
   box.appendChild(svg);
 }
@@ -821,58 +999,97 @@ function paginaGeral(C) {
   var base = completos.length ? completos : serie;
   var mediaMes = base.length ? base.reduce(function (s, x) { return s + x.v; }, 0) / base.length : 0;
 
-  /* --- cartões --- */
+  /* --- cartões (todos abrem o Detalhe com o recorte que o número representa) --- */
   var heroi = el("div", "heroi sobe");
-  var hc = el("div", "heroi-card");
+  var hc = el("div", "heroi-card clicavel");
   hc.appendChild(el("div", "rot", "Total reposto no período"));
   var hv = el("div", "valor", fBRL(K.v)); hv.title = fMil(K.v);
   hc.appendChild(hv);
   var sub = el("div", "sub");
-  sub.innerHTML = "<b>" + fInt(K.ped) + "</b> reposições · " + fInt(K.itens) + " itens · ticket médio <b>" + fBRL(K.ped ? K.v / K.ped : 0) + "</b>";
+  sub.innerHTML = "<b>" + fInt(K.ped) + "</b> reposições · " + fInt(K.sku) + " SKU · ticket médio <b>" + fBRL(K.ped ? K.v / K.ped : 0) + "</b>";
   hc.appendChild(sub);
   var dl = el("div", "sub"); dl.style.marginTop = "12px";
   dl.appendChild(delta(K.v, vAnt, "mesmo período de " + (+anoFim - 1)));
   hc.appendChild(dl);
+  hc.appendChild(el("div", "ver", "Abrir no Detalhe ↗"));
+  ligarClique(hc, function () { detalhar(null, [COL_DET.valor, -1]); });
   heroi.appendChild(hc);
 
   var lado = el("div", "heroi-lado");
   lado.appendChild(kpi("ouro", "Acumulado em " + anoFim, fBRL(acumFim),
-    el("span", null, "de 01/01 até " + fData(E.ate < MAXD ? E.ate : MAXD)), "Soma de 1º de janeiro até o fim do período, respeitando os filtros de motivo, chamado, motorista e filial — o filtro de início não corta o acumulado."));
+    el("span", null, "de 01/01 até " + fData(E.ate < MAXD ? E.ate : MAXD)),
+    "Soma de 1º de janeiro até o fim do período, respeitando os filtros de motivo, chamado, motorista, cliente e filial — o filtro de início não corta o acumulado.",
+    function () { detalhar(function () { definirPeriodo(anoFim + "-01-01", E.ate); }, [COL_DET.valor, -1]); }));
   var kAcum = lado.lastChild.querySelector(".sub");
   kAcum.appendChild(document.createTextNode(" · "));
   kAcum.appendChild(delta(acumFim, acumAnt, String(+anoFim - 1)));
   lado.appendChild(kpi("info", "Reposições com chamado", fPct(K.pctPed),
     fInt(K.pedCom) + " de " + fInt(K.pedB) + " reposições · " + fPct(K.pctVal) + " do valor",
-    "Uma reposição (pedido) conta como COM chamado se ao menos um item dela tem chamado ligado. A ligação usa a NF citada na observação do pedido e o produto reposto. O percentual de valor é medido por item."));
+    "Uma reposição (pedido) conta como COM chamado se ao menos um item dela tem chamado ligado. A ligação usa a NF citada na observação do pedido e o produto reposto. O percentual de valor é medido por item.",
+    function () { detalhar(function () { E.chamado = "com"; }); }));
   lado.appendChild(kpi("atencao", "Reposições sem chamado", fInt(K.pedSem),
     fBRL(K.vSem) + " repostos sem chamado",
-    "Pedido de reposição que não tem nenhum chamado ligado: nem pelo produto, nem pela NF."));
-  lado.appendChild(kpi("", "Média mensal", fBRL(mediaMes), "meses completos do período"));
+    "Pedido de reposição que não tem nenhum chamado ligado: nem pelo produto, nem pela NF.",
+    function () { detalhar(function () { E.chamado = "sem"; }, [COL_DET.valor, -1]); }));
+  lado.appendChild(kpi("", "Média mensal", fBRL(mediaMes), "meses completos do período", null,
+    function () { detalhar(null); }));
   heroi.appendChild(lado);
   pg.appendChild(heroi);
 
   var ks = el("div", "kpis sobe");
-  ks.appendChild(kpi("", "Unidades repostas", fQtd(K.q), fInt(K.itens) + " itens distintos"));
-  ks.appendChild(kpi("", "Clientes atendidos", fInt(K.clientes), "com ao menos uma reposição"));
-  ks.appendChild(kpi("", "Chamados ligados", fInt(K.chamados), fQtd(K.qr) + " unid. reclamadas"));
+  ks.appendChild(kpi("", "Unidades repostas", fQtd(K.q), fInt(K.sku) + " SKU distintos", null,
+    function () { detalhar(null, [COL_DET.unid, -1]); }));
+  ks.appendChild(kpi("", "Clientes atendidos", fInt(K.clientes), "com ao menos uma reposição", null,
+    function () { detalhar(null, [COL_DET.cliente, 1]); }));
+  ks.appendChild(kpi("", "Chamados ligados", fInt(K.chamados), fQtd(K.qr) + " unid. reclamadas", null,
+    function () { detalhar(function () { E.chamado = "com"; }, [COL_DET.chamado, -1]); }));
   ks.appendChild(kpi("", "Chamado → reposição", K.lagMed == null ? "—" : fQtd(K.lagMed) + (K.lagMed === 1 ? " dia" : " dias"),
-    "mediana entre abrir o chamado e repor", "Dias entre a abertura do chamado e a data do pedido de reposição. Valor 0 = repôs no mesmo dia."));
+    "mediana entre abrir o chamado e repor", "Dias entre a abertura do chamado e a data do pedido de reposição. Valor 0 = repôs no mesmo dia.",
+    function () { detalhar(function () { E.chamado = "com"; }); }));
+
+  /* o cliente com mais reposições (pedidos distintos); empate vai para o de maior valor */
+  var gcl = agrupar(C.F, function (r) { return r.c; }).sort(function (a, b) { return (b.ped.size - a.ped.size) || (b.v - a.v); });
+  if (gcl.length) {
+    var tc = gcl[0];
+    var kc = kpi("roxo", "Cliente que mais fez reposições", nomeCliente(tc.k),
+      fInt(tc.ped.size) + " reposições · " + fBRL(tc.v) + " · " + fPct(K.ped ? tc.ped.size / K.ped : 0) + " do total",
+      "Cliente com o maior número de reposições (pedidos distintos) no período e nos filtros atuais. Em caso de empate, o de maior valor.",
+      function () { detalhar(function () { so(E.clientes, tc.k); }, [COL_DET.valor, -1]); });
+    kc.style.gridColumn = "span 2";
+    var vv = kc.querySelector(".val");
+    vv.style.fontSize = "16px"; vv.style.whiteSpace = "normal"; vv.style.lineHeight = "1.25";
+    ks.insertBefore(kc, ks.firstChild);
+  }
   pg.appendChild(ks);
 
   if (!C.F.length) { pg.appendChild(painel("Sem dados", null, vazioFiltro())); return pg; }
 
   /* --- R$ mês a mês, com × sem chamado --- */
+  var DICA_MES = "Clique na coluna, ou numa cor, para abrir no Detalhe";
   var cats = serie.map(function (s) {
     var parc = mesParcial(s.mes);
-    return { rot: rotMes(s.mes, multiAno) + (parc ? "*" : ""), dica: MESES_LONGO[+s.mes.slice(5, 7) - 1] + "/" + s.mes.slice(0, 4) + (parc ? " (parcial)" : "") };
+    var nomeMes = MESES_LONGO[+s.mes.slice(5, 7) - 1] + "/" + s.mes.slice(0, 4);
+    return {
+      rot: rotMes(s.mes, multiAno) + (parc ? "*" : ""),
+      aoClicar: function () { detalhar(function () { periodoMes(s.mes); }, [COL_DET.valor, -1]); },
+      tip: {
+        titulo: nomeMes, sub: parc ? "mês parcial" : "",
+        linhas: [{ cor: COR.com, nome: "Com chamado", valor: fBRL(s.vCom) }, { cor: COR.sem, nome: "Sem chamado", valor: fBRL(s.vSem) }],
+        total: { nome: "Total do mês", valor: fBRL(s.v) },
+        extra: [fInt(s.pedB) + " reposições no mês", fPct(s.pct) + " delas com chamado"],
+        clique: DICA_MES
+      }
+    };
   });
   var b1 = el("div", "gbox");
   noGrafico(b1, function (box) {
     graficoBarras(box, {
       cats: cats,
       series: [
-        { nome: "Com chamado", cor: COR.com, txt: "#ffffff", valores: serie.map(function (s) { return s.vCom; }) },
-        { nome: "Sem chamado", cor: COR.sem, txt: "#0b1020", valores: serie.map(function (s) { return s.vSem; }) }
+        { nome: "Com chamado", cor: COR.com, txt: "#ffffff", valores: serie.map(function (s) { return s.vCom; }),
+          aoClicarSeg: function (i) { detalhar(function () { periodoMes(serie[i].mes); E.chamado = "com"; }, [COL_DET.valor, -1]); } },
+        { nome: "Sem chamado", cor: COR.sem, txt: "#0b1020", valores: serie.map(function (s) { return s.vSem; }),
+          aoClicarSeg: function (i) { detalhar(function () { periodoMes(serie[i].mes); E.chamado = "sem"; }, [COL_DET.valor, -1]); } }
       ],
       fmtEixo: fMil, fmtSeg: fMilCurto, fmtCheio: fBRL,
       ref: mediaMes ? { valor: mediaMes, rot: "Média " + fMil(mediaMes) } : null
@@ -883,7 +1100,7 @@ function paginaGeral(C) {
   corpo1.appendChild(legenda([{ nome: "Com chamado", cor: COR.com }, { nome: "Sem chamado", cor: COR.sem }, { nome: "Média mensal", cor: "var(--ouro)", linha: true, tracejado: true }]));
   var np = notaParcial(meses); if (np) corpo1.appendChild(np);
   pg.appendChild(painel("Reposições mês a mês (R$)",
-    "Valor reposto em cada mês, separado entre reposições com e sem chamado. Total em cima de cada coluna.", corpo1));
+    "Valor reposto em cada mês, separado entre reposições com e sem chamado. Clique em uma coluna para abrir o mês no Detalhe.", corpo1));
 
   /* --- acumulado do ano + % com chamado --- */
   var anos = [];
@@ -894,7 +1111,6 @@ function paginaGeral(C) {
   var coresAno = [ "#7c92be", "#5f7ef5", "#d3a344" ];
   var b2 = el("div", "gbox");
   noGrafico(b2, function (box) {
-    var catsAno = MESES.map(function (m) { return { rot: m }; });
     var series = anos.map(function (an, ix) {
       var acum = 0, vals = [], atual = an === +anoFim;
       for (var m = 1; m <= 12; m++) {
@@ -910,22 +1126,53 @@ function paginaGeral(C) {
       var cor = coresAno[Math.min(ix + (3 - anos.length), 2)];
       return { nome: String(an), cor: atual ? "#d3a344" : cor, valores: vals, rotulos: atual ? "todos" : "fim", abaixo: !atual, tracejado: !atual, larg: atual ? 3 : 2, opaco: atual ? 1 : 0.85, corTxt: atual ? "#f5dea0" : "#aec0e2" };
     });
+    var atualS = series.filter(function (x) { return x.nome === anoFim; })[0];
+    var antS = series.filter(function (x) { return x.nome === String(+anoFim - 1); })[0];
+    var catsAno = MESES.map(function (m, i) {
+      var mm = String(i + 1).padStart(2, "0");
+      var linhas = [], extra = [];
+      series.forEach(function (se) { if (se.valores[i] != null) linhas.push({ cor: se.cor, nome: se.nome, valor: fBRL(se.valores[i]) }); });
+      if (atualS && antS && atualS.valores[i] != null && antS.valores[i]) {
+        var dv = atualS.valores[i] / antS.valores[i] - 1;
+        extra.push(anoFim + " contra " + (+anoFim - 1) + ": " + (dv > 0 ? "▲ " : dv < 0 ? "▼ " : "") + nf1.format(Math.abs(dv) * 100) + "%");
+      }
+      var tem = atualS && atualS.valores[i] != null;
+      return {
+        rot: m, dica: MESES_LONGO[i],
+        aoClicar: tem ? function () { detalhar(function () { definirPeriodo(anoFim + "-01-01", ultimoDia(anoFim + "-" + mm)); }, [COL_DET.valor, -1]); } : null,
+        tip: { titulo: "Acumulado até " + MESES_LONGO[i].toLowerCase(), linhas: linhas, extra: extra,
+               clique: tem ? "Clique para abrir janeiro a " + MESES_LONGO[i].toLowerCase() + " de " + anoFim + " no Detalhe" : null }
+      };
+    });
     var max = Math.max.apply(null, series.reduce(function (s, x) { return s.concat(x.valores.filter(function (v) { return v != null; })); }, [1]));
     graficoLinhas(box, { cats: catsAno, series: series, ticks: ticks(max, 4), fmtEixo: fMil, fmt: fMilCurto, fmtCheio: fBRL });
   });
   var corpo2 = el("div");
   corpo2.appendChild(b2);
   corpo2.appendChild(legenda(anos.map(function (an) { return { nome: String(an), cor: an === +anoFim ? "#d3a344" : "#7c92be", linha: true, tracejado: an !== +anoFim }; })));
-  pg.appendChild(painel("Acumulado no ano (R$)", "Soma corrida de janeiro até cada mês, comparada ao ano anterior.", corpo2));
+  pg.appendChild(painel("Acumulado no ano (R$)", "Soma corrida de janeiro até cada mês, comparada ao ano anterior. Clique em um mês para abrir o acumulado até ele.", corpo2));
 
   var pcts = serie.map(function (s) { return s.pct; });
+  var catsPct = serie.map(function (s, k) {
+    var parc = mesParcial(s.mes);
+    return {
+      rot: cats[k].rot,
+      aoClicar: function () { detalhar(function () { periodoMes(s.mes); }, [COL_DET.valor, -1]); },
+      tip: {
+        titulo: MESES_LONGO[+s.mes.slice(5, 7) - 1] + "/" + s.mes.slice(0, 4), sub: parc ? "mês parcial" : "",
+        linhas: [{ cor: COR.com, nome: "% com chamado", valor: fPct(s.pct) }],
+        extra: [fInt(s.pedCom) + " de " + fInt(s.pedB) + " reposições com chamado", "Média do período: " + fPct(K.pctPed)],
+        clique: "Clique para abrir o mês no Detalhe"
+      }
+    };
+  });
   var b3 = el("div", "gbox");
   noGrafico(b3, function (box) {
     var validos = pcts.filter(function (p) { return p != null; });
     var mn = Math.min.apply(null, validos.concat([K.pctPed])), piso = Math.max(0, Math.floor((mn - 0.06) * 10) / 10);
     var tk = []; for (var t = piso; t <= 1.0001; t += 0.1) tk.push(Math.round(t * 100) / 100);
     graficoLinhas(box, {
-      cats: cats, ticks: tk, fmtEixo: function (v) { return Math.round(v * 100) + "%"; }, fmt: function (v) { return nf1.format(v * 100) + "%"; }, fmtCheio: function (v) { return nf1.format(v * 100) + "%"; },
+      cats: catsPct, ticks: tk, fmtEixo: function (v) { return Math.round(v * 100) + "%"; }, fmt: function (v) { return nf1.format(v * 100) + "%"; }, fmtCheio: function (v) { return nf1.format(v * 100) + "%"; },
       series: [{ nome: "% com chamado", cor: COR.com, valores: pcts, rotulos: "todos", corTxt: "#aebdff" }],
       ref: { valor: K.pctPed, rot: "Média " + fPct(K.pctPed) }
     });
@@ -934,29 +1181,32 @@ function paginaGeral(C) {
   corpo3.appendChild(b3);
   var anosBox = el("div", "anos");
   mediaAnual().forEach(function (x) {
-    var c = el("div", "ano");
+    var c = el("div", "ano clicavel");
     c.appendChild(el("div", "k", "Média " + x.ano + (x.ano === MAXD.slice(0, 4) ? " (até " + fData(x.ate).slice(0, 5) + ")" : "")));
     c.appendChild(el("div", "v", fPct(x.pct)));
     c.appendChild(el("div", "d", fInt(x.com) + " de " + fInt(x.ped) + " reposições"));
+    ligarClique(c, function () { detalhar(function () { definirPeriodo(x.ano + "-01-01", x.ano + "-12-31"); }, [COL_DET.valor, -1]); });
     anosBox.appendChild(c);
   });
-  var np3 = notaParcial(meses); if (np3) { np3.firstChild && (np3.innerHTML = "<b>*</b> mês parcial: o percentual de um mês em andamento ainda vai mudar quando os chamados forem abertos."); corpo3.appendChild(np3); }
+  var np3 = notaParcial(meses); if (np3) { np3.innerHTML = "<b>*</b> mês parcial: o percentual de um mês em andamento ainda vai mudar quando os chamados forem abertos."; corpo3.appendChild(np3); }
   corpo3.appendChild(anosBox);
   pg.appendChild(painel("% de reposições com chamado",
-    "Evolução mensal. Reposição sem chamado = campo de chamado vazio. A linha tracejada é a média do período.", corpo3));
+    "Evolução mensal. Reposição sem chamado = campo de chamado vazio. A linha tracejada é a média do período. Clique em um mês ou em uma média anual para abrir no Detalhe.", corpo3));
 
   /* --- principais motivos e clientes --- */
   var tres = el("div", "duas");
   var gm = agrupar(C.F.filter(function (r) { return r.m >= 0; }), function (r) { return r.m; }).sort(function (a, b) { return b.v - a.v; });
   var totalV = K.v || 1;
-  tres.appendChild(painel("Principais motivos (R$)", "Os 8 maiores. A lista completa está em Motivos.",
+  tres.appendChild(painel("Principais motivos (R$)", "Os 8 maiores. Clique em um motivo para abrir no Detalhe; a lista completa está em Motivos.",
     gm.length ? rank(gm.slice(0, 8).map(function (g, i) {
-      return { nome: nomeMotivo(g.k), valor: g.v, texto: fMil(g.v), sub: fPct(g.v / totalV) + " · " + fInt(g.ped.size) + " rep.", cor: i < 4 ? COR.motivos[i] : COR.demais, tip: fBRL(g.v) };
+      return { nome: nomeMotivo(g.k), valor: g.v, texto: fMil(g.v), sub: fPct(g.v / totalV) + " · " + fInt(g.ped.size) + " rep.", cor: i < 4 ? COR.motivos[i] : COR.demais, tip: fBRL(g.v),
+        aoClicar: function () { detalhar(function () { so(E.motivos, g.k); }, [COL_DET.valor, -1]); } };
     }), true) : el("div", "vazio", "Sem chamados no recorte.")));
   var gc = agrupar(C.F, function (r) { return r.c; }).sort(function (a, b) { return b.v - a.v; });
-  tres.appendChild(painel("Clientes que mais recebem reposição (R$)", "Os 8 maiores do período.",
+  tres.appendChild(painel("Clientes que mais recebem reposição (R$)", "Os 8 maiores do período. Clique em um cliente para abrir no Detalhe.",
     rank(gc.slice(0, 8).map(function (g) {
-      return { nome: nomeCliente(g.k), valor: g.v, texto: fMil(g.v), sub: fInt(g.ped.size) + " rep.", cor: "var(--viz-1)", tip: fBRL(g.v) };
+      return { nome: nomeCliente(g.k), valor: g.v, texto: fMil(g.v), sub: fInt(g.ped.size) + " rep.", cor: "var(--viz-1)", tip: fBRL(g.v),
+        aoClicar: function () { detalhar(function () { so(E.clientes, g.k); }, [COL_DET.valor, -1]); } };
     }), true)));
   pg.appendChild(tres);
   return pg;
@@ -974,23 +1224,32 @@ function paginaMotivos(C) {
   var total = K.v || 1;
 
   var ks = el("div", "kpis sobe");
-  ks.appendChild(kpi("ouro", "Motivos distintos", fInt(gm.length), "no recorte de filtros"));
-  ks.appendChild(kpi("info", "Principal motivo", gm.length ? nomeMotivo(gm[0].k) : "—", gm.length ? fBRL(gm[0].v) + " · " + fPct(gm[0].v / total) : ""));
-  ks.lastChild.querySelector(".val").style.fontSize = "15px";
-  ks.lastChild.querySelector(".val").style.whiteSpace = "normal";
-  ks.appendChild(kpi("", "Valor com motivo", fBRL(K.vCom), fPct(K.v ? K.vCom / K.v : 0) + " do reposto"));
-  ks.appendChild(kpi("atencao", "Valor sem chamado", fBRL(vSem), fPct(K.v ? vSem / K.v : 0) + " do reposto · sem motivo"));
+  ks.appendChild(kpi("ouro", "Motivos distintos", fInt(gm.length), "no recorte de filtros", null,
+    function () { detalhar(function () { E.chamado = "com"; }); }));
+  var kp = kpi("info", "Principal motivo", gm.length ? nomeMotivo(gm[0].k) : "—", gm.length ? fBRL(gm[0].v) + " · " + fPct(gm[0].v / total) : "", null,
+    gm.length ? function () { detalhar(function () { so(E.motivos, gm[0].k); }, [COL_DET.valor, -1]); } : null);
+  kp.querySelector(".val").style.fontSize = "15px";
+  kp.querySelector(".val").style.whiteSpace = "normal";
+  ks.appendChild(kp);
+  ks.appendChild(kpi("", "Valor com motivo", fBRL(K.vCom), fPct(K.v ? K.vCom / K.v : 0) + " do reposto", null,
+    function () { detalhar(function () { E.chamado = "com"; }, [COL_DET.valor, -1]); }));
+  ks.appendChild(kpi("atencao", "Valor sem chamado", fBRL(vSem), fPct(K.v ? vSem / K.v : 0) + " do reposto · sem motivo", null,
+    function () { detalhar(function () { E.chamado = "sem"; }, [COL_DET.valor, -1]); }));
   pg.appendChild(ks);
 
+  var restoDoRank = gm.slice(12).map(function (g) { return g.k; });
   var itensRank = gm.slice(0, 12).map(function (g, i) {
-    return { nome: nomeMotivo(g.k), valor: g.v, texto: fMil(g.v), sub: fPct(g.v / total) + " · " + fInt(g.ped.size) + " rep.", cor: i < 4 ? COR.motivos[i] : COR.demais, tip: fBRL(g.v) };
+    return { nome: nomeMotivo(g.k), valor: g.v, texto: fMil(g.v), sub: fPct(g.v / total) + " · " + fInt(g.ped.size) + " rep.", cor: i < 4 ? COR.motivos[i] : COR.demais, tip: fBRL(g.v),
+      aoClicar: function () { detalhar(function () { so(E.motivos, g.k); }, [COL_DET.valor, -1]); } };
   });
   if (gm.length > 12) {
     var resto = gm.slice(12).reduce(function (s, g) { return s + g.v; }, 0);
-    itensRank.push({ nome: "Demais " + (gm.length - 12) + " motivos", valor: resto, texto: fMil(resto), sub: fPct(resto / total), cor: COR.demais, tip: fBRL(resto) });
+    itensRank.push({ nome: "Demais " + (gm.length - 12) + " motivos", valor: resto, texto: fMil(resto), sub: fPct(resto / total), cor: COR.demais, tip: fBRL(resto),
+      aoClicar: function () { detalhar(function () { E.motivos.clear(); restoDoRank.forEach(function (k) { E.motivos.add(k); }); }, [COL_DET.valor, -1]); } });
   }
-  if (vSem > 0) itensRank.push({ nome: "Sem chamado (sem motivo)", valor: vSem, texto: fMil(vSem), sub: fPct(vSem / total), cor: COR.semChamado, tip: fBRL(vSem) });
-  pg.appendChild(painel("Motivos que mais geram reposição (R$)", "Valor reposto por motivo do chamado. O pedido é repartido entre os motivos dos seus itens — a soma fecha com o total.", rank(itensRank)));
+  if (vSem > 0) itensRank.push({ nome: "Sem chamado (sem motivo)", valor: vSem, texto: fMil(vSem), sub: fPct(vSem / total), cor: COR.semChamado, tip: fBRL(vSem),
+    aoClicar: function () { detalhar(function () { E.chamado = "sem"; }, [COL_DET.valor, -1]); } });
+  pg.appendChild(painel("Motivos que mais geram reposição (R$)", "Valor reposto por motivo do chamado. O pedido é repartido entre os motivos dos seus itens — a soma fecha com o total. Clique em um motivo para abrir no Detalhe.", rank(itensRank)));
 
   /* evolução mensal dos 4 maiores */
   var meses = listaMeses(E.de, E.ate);
@@ -1005,20 +1264,36 @@ function paginaMotivos(C) {
     var t = top.indexOf(r.m);
     if (t >= 0) sTop[t][i] += r.v; else sDem[i] += r.v;
   });
-  var series = top.map(function (k, t) { return { nome: nomeMotivo(k), cor: COR.motivos[t], txt: COR.txtMotivos[t], valores: sTop[t] }; });
-  series.push({ nome: "Demais motivos", cor: COR.demais, txt: "#0b1020", valores: sDem });
-  series.push({ nome: "Sem chamado", cor: COR.semChamado, txt: "#ffffff", valores: sSem });
+  var restoTop = gm.slice(4).map(function (g) { return g.k; });
+  var series = top.map(function (k, t) {
+    return { nome: nomeMotivo(k), cor: COR.motivos[t], txt: COR.txtMotivos[t], valores: sTop[t],
+      aoClicarSeg: function (i) { detalhar(function () { periodoMes(meses[i]); so(E.motivos, k); }, [COL_DET.valor, -1]); } };
+  });
+  series.push({ nome: "Demais motivos", cor: COR.demais, txt: "#0b1020", valores: sDem,
+    aoClicarSeg: function (i) { detalhar(function () { periodoMes(meses[i]); E.motivos.clear(); restoTop.forEach(function (k) { E.motivos.add(k); }); }, [COL_DET.valor, -1]); } });
+  series.push({ nome: "Sem chamado", cor: COR.semChamado, txt: "#ffffff", valores: sSem,
+    aoClicarSeg: function (i) { detalhar(function () { periodoMes(meses[i]); E.chamado = "sem"; }, [COL_DET.valor, -1]); } });
   var b = el("div", "gbox");
   noGrafico(b, function (box) {
     graficoBarras(box, {
-      cats: meses.map(function (m) { return { rot: rotMes(m, multiAno) + (mesParcial(m) ? "*" : ""), dica: MESES_LONGO[+m.slice(5, 7) - 1] + "/" + m.slice(0, 4) }; }),
+      cats: meses.map(function (m, i) {
+        var parc = mesParcial(m);
+        var linhas = [], tot = 0;
+        series.forEach(function (se) { if (se.valores[i]) { linhas.push({ cor: se.cor, nome: se.nome, valor: fBRL(se.valores[i]) }); tot += se.valores[i]; } });
+        return {
+          rot: rotMes(m, multiAno) + (parc ? "*" : ""),
+          aoClicar: function () { detalhar(function () { periodoMes(m); }, [COL_DET.valor, -1]); },
+          tip: { titulo: MESES_LONGO[+m.slice(5, 7) - 1] + "/" + m.slice(0, 4), sub: parc ? "mês parcial" : "", linhas: linhas, total: { nome: "Total do mês", valor: fBRL(tot) },
+                 clique: "Clique na coluna, ou numa cor, para abrir no Detalhe" }
+        };
+      }),
       series: series, fmtEixo: fMil, fmtSeg: fMilCurto, fmtCheio: fBRL, altura: 340
     });
   });
   var corpo = el("div"); corpo.appendChild(b);
   corpo.appendChild(legenda(series.map(function (s) { return { nome: s.nome, cor: s.cor }; })));
   var np = notaParcial(meses); if (np) corpo.appendChild(np);
-  pg.appendChild(painel("Evolução mensal por motivo (R$)", "Os 4 maiores motivos do recorte; o resto agrupado. “Sem chamado” é o valor reposto sem motivo.", corpo));
+  pg.appendChild(painel("Evolução mensal por motivo (R$)", "Os 4 maiores motivos do recorte; o resto agrupado. “Sem chamado” é o valor reposto sem motivo. Clique em uma cor para abrir aquele motivo, naquele mês, no Detalhe.", corpo));
 
   /* tabela completa */
   var linhas = gm.map(function (g) { return { motivo: nomeMotivo(g.k), g: g, sem: false }; });
@@ -1026,16 +1301,19 @@ function paginaMotivos(C) {
     var gs = agrupar(semMotivo, function () { return 1; })[0];
     linhas.push({ motivo: "(Sem chamado)", g: gs, sem: true });
   }
-  pg.appendChild(painel("Todos os motivos", "Clique no título da coluna para ordenar. “Reposições” conta pedidos distintos.",
+  pg.appendChild(painel("Todos os motivos", "Clique no título da coluna para ordenar e em uma linha para abrir o motivo no Detalhe. “Reposições” conta pedidos distintos; “SKU”, produtos distintos.",
     tabela({
       id: "motivos", exportar: "Motivos", busca: "Buscar motivo…", tam: 15, ordem: [1, -1],
       linhas: linhas, classeLinha: function (r) { return r.sem ? "sem-chamado-linha" : ""; },
+      aoClicar: function (r) {
+        detalhar(function () { if (r.sem) E.chamado = "sem"; else so(E.motivos, r.g.k); }, [COL_DET.valor, -1]);
+      },
       colunas: [
         { t: "Motivo", k: "texto", v: function (r) { return r.motivo; }, corta: true },
         { t: "Valor (R$)", k: "moeda", v: function (r) { return r.g.v; } },
         { t: "% do total", k: "percentual", v: function (r) { return r.g.v / total * 100; }, somar: false },
         { t: "Reposições", k: "inteiro", v: function (r) { return r.g.ped.size; }, somar: false },
-        { t: "Itens", k: "inteiro", v: function (r) { return r.g.it.size; }, somar: false },
+        { t: "SKU", k: "inteiro", v: function (r) { return r.g.sku.size; }, somar: false },
         { t: "Unid. repostas", k: "inteiro", v: function (r) { return r.g.q; } },
         { t: "Unid. reclamadas", k: "inteiro", v: function (r) { return r.sem ? null : r.g.qr; } },
         { t: "Chamados", k: "inteiro", v: function (r) { return r.sem ? null : r.g.cham.size; }, somar: false },
@@ -1052,6 +1330,13 @@ function paginaItens(C) {
   var porFornec = E.itensVisao === "fornecedor";
   var grupos = agrupar(C.F, function (r) { return porFornec ? (r.fo < 0 ? null : r.fo) : r.p; });
   var nomeG = function (g) { return porFornec ? nomeFornecedor(g.k) : nomeProduto(g.k); };
+  /* clicar em um item (ou fornecedor) abre o Detalhe só com ele; a faixa abaixo dos filtros mostra o recorte e deixa remover */
+  var abrirG = function (g) {
+    detalhar(function () {
+      E.produtos.clear(); E.fornecs.clear();
+      if (porFornec) E.fornecs.add(g.k); else E.produtos.add(g.k);
+    }, [COL_DET.valor, -1]);
+  };
 
   var cab = el("div", "filtros");
   var seg = el("div", "seg");
@@ -1066,8 +1351,12 @@ function paginaItens(C) {
   var tres = el("div", "tres");
   function topo(titulo, sub, chave, fmtTxt, fmtSub, cor) {
     var ord = grupos.slice().sort(function (a, b) { return chave(b) - chave(a); }).slice(0, 10);
-    return painel(titulo, sub, rank(ord.map(function (g) {
-      return { nome: nomeG(g), valor: chave(g), texto: fmtTxt(g), sub: fmtSub(g), cor: cor, tip: nomeG(g) };
+    return painel(titulo, sub + " Clique para abrir no Detalhe.", rank(ord.map(function (g) {
+      return { nome: nomeG(g), valor: chave(g), texto: fmtTxt(g), sub: fmtSub(g), cor: cor, tip: nomeG(g), aoClicar: function () { abrirG(g); },
+        dica: { titulo: nomeG(g), linhas: [
+          { nome: "Valor reposto", valor: fBRL(g.v) }, { nome: "Unidades", valor: fQtd(g.q) },
+          { nome: "Reposições", valor: fInt(g.ped.size) }, { nome: "Clientes", valor: fInt(g.cli.size) }, { nome: "Meses com reposição", valor: fInt(g.meses.size) }
+        ], clique: "Clique para abrir no Detalhe" } };
     }), true));
   }
   tres.appendChild(topo("Maior valor (R$)", "Top 10 por valor reposto.", function (g) { return g.v; }, function (g) { return fMil(g.v); }, function (g) { return fQtd(g.q) + " unid."; }, "var(--viz-1)"));
@@ -1086,7 +1375,7 @@ function paginaItens(C) {
       var f = D.dims.produtos[g.k][2]; return f == null ? "" : nomeFornecedor(f);
     }, corta: true });
   } else {
-    colunas.push({ t: "Itens distintos", k: "inteiro", v: function (g) { return new Set(Array.from(g.it).map(function (k) { return k.split("/")[1]; })).size; }, somar: false });
+    colunas.push({ t: "SKU", k: "inteiro", v: function (g) { return g.sku.size; }, somar: false });
   }
   colunas.push(
     { t: "Valor (R$)", k: "moeda", v: function (g) { return g.v; } },
@@ -1098,8 +1387,9 @@ function paginaItens(C) {
     { t: "Média por reposição (R$)", k: "moeda", v: function (g) { return g.ped.size ? g.v / g.ped.size : 0; } }
   );
   pg.appendChild(painel(porFornec ? "Todos os fornecedores" : "Todos os itens",
-    "Valor, volume e recorrência juntos. Ordene pela coluna que interessa; a busca olha nome, código e fornecedor.",
-    tabela({ id: "itens-" + E.itensVisao, exportar: porFornec ? "Fornecedores" : "Itens", busca: porFornec ? "Buscar fornecedor…" : "Buscar item, código ou fornecedor…", tam: 20, ordem: [colunas.length - 7 + (porFornec ? 0 : 0), -1], linhas: linhas, colunas: colunas })));
+    "Valor, volume e recorrência juntos. Ordene pela coluna que interessa, busque por nome, código ou fornecedor e clique em uma linha para abrir no Detalhe.",
+    tabela({ id: "itens-" + E.itensVisao, exportar: porFornec ? "Fornecedores" : "Itens", busca: porFornec ? "Buscar fornecedor…" : "Buscar item, código ou fornecedor…", tam: 20,
+      ordem: [colunas.length - 7, -1], linhas: linhas, colunas: colunas, aoClicar: abrirG })));
   return pg;
 }
 
@@ -1120,30 +1410,43 @@ function paginaMotoristas(C) {
     g.motivo = melhor == null ? "" : nomeMotivo(+melhor);
   });
   var totalV = gm.reduce(function (s, g) { return s + g.v; }, 0) || 1;
+  var abrirMot = function (g) { detalhar(function () { so(E.motoristas, g.k); }, [COL_DET.valor, -1]); };
 
   var ks = el("div", "kpis sobe");
-  ks.appendChild(kpi("ouro", "Motoristas com chamado", fInt(gm.length), "no recorte de filtros"));
+  ks.appendChild(kpi("ouro", "Motoristas com chamado", fInt(gm.length), "no recorte de filtros", null,
+    function () { detalhar(function () { E.chamado = "com"; }); }));
   var porCh = gm.slice().sort(function (a, b) { return b.cham.size - a.cham.size; })[0];
-  ks.appendChild(kpi("info", "Mais chamados", nomeMotorista(porCh.k), fInt(porCh.cham.size) + " chamados · " + fBRL(porCh.v)));
-  ks.lastChild.querySelector(".val").style.fontSize = "15px"; ks.lastChild.querySelector(".val").style.whiteSpace = "normal";
+  var k1 = kpi("info", "Mais chamados", nomeMotorista(porCh.k), fInt(porCh.cham.size) + " chamados · " + fBRL(porCh.v), null, function () { abrirMot(porCh); });
+  k1.querySelector(".val").style.fontSize = "15px"; k1.querySelector(".val").style.whiteSpace = "normal";
+  ks.appendChild(k1);
   var porVal = gm.slice().sort(function (a, b) { return b.v - a.v; })[0];
-  ks.appendChild(kpi("atencao", "Maior valor reposto", nomeMotorista(porVal.k), fBRL(porVal.v) + " · " + fPct(porVal.v / totalV) + " do total"));
-  ks.lastChild.querySelector(".val").style.fontSize = "15px"; ks.lastChild.querySelector(".val").style.whiteSpace = "normal";
-  ks.appendChild(kpi("", "Chamados no recorte", fInt(new Set(comMot.map(function (r) { return r.ch; })).size), "com motorista identificado"));
+  var k2 = kpi("atencao", "Maior valor reposto", nomeMotorista(porVal.k), fBRL(porVal.v) + " · " + fPct(porVal.v / totalV) + " do total", null, function () { abrirMot(porVal); });
+  k2.querySelector(".val").style.fontSize = "15px"; k2.querySelector(".val").style.whiteSpace = "normal";
+  ks.appendChild(k2);
+  ks.appendChild(kpi("", "Chamados no recorte", fInt(new Set(comMot.map(function (r) { return r.ch; })).size), "com motorista identificado", null,
+    function () { detalhar(function () { E.chamado = "com"; }, [COL_DET.chamado, -1]); }));
   pg.appendChild(ks);
 
   var duas = el("div", "duas");
   var topC = gm.slice().sort(function (a, b) { return b.cham.size - a.cham.size; }).slice(0, 12);
-  duas.appendChild(painel("Mais chamados que viraram reposição", "Quantidade de chamados distintos por motorista. Ranking absoluto: o painel não tem o total de entregas de cada um.",
-    rank(topC.map(function (g) { return { nome: nomeMotorista(g.k), valor: g.cham.size, texto: fInt(g.cham.size), sub: fMil(g.v), cor: "var(--viz-1)", tip: g.motivo }; }))));
+  duas.appendChild(painel("Mais chamados que viraram reposição", "Quantidade de chamados distintos por motorista. Ranking absoluto: o painel não tem o total de entregas de cada um. Clique para abrir no Detalhe.",
+    rank(topC.map(function (g) {
+      return { nome: nomeMotorista(g.k), valor: g.cham.size, texto: fInt(g.cham.size), sub: fMil(g.v), cor: "var(--viz-1)", aoClicar: function () { abrirMot(g); },
+        dica: { titulo: nomeMotorista(g.k), linhas: [{ nome: "Chamados", valor: fInt(g.cham.size) }, { nome: "Reposições", valor: fInt(g.ped.size) }, { nome: "Valor reposto", valor: fBRL(g.v) }],
+                extra: g.motivo ? ["Principal motivo: " + g.motivo] : [], clique: "Clique para abrir no Detalhe" } };
+    }))));
   var topV = gm.slice().sort(function (a, b) { return b.v - a.v; }).slice(0, 12);
-  duas.appendChild(painel("Maior valor reposto (R$)", "Soma do valor das reposições ligadas aos chamados do motorista.",
-    rank(topV.map(function (g) { return { nome: nomeMotorista(g.k), valor: g.v, texto: fMil(g.v), sub: fPct(g.v / totalV), cor: "var(--viz-2-luz)", tip: fBRL(g.v) }; }))));
+  duas.appendChild(painel("Maior valor reposto (R$)", "Soma do valor das reposições ligadas aos chamados do motorista. Clique para abrir no Detalhe.",
+    rank(topV.map(function (g) {
+      return { nome: nomeMotorista(g.k), valor: g.v, texto: fMil(g.v), sub: fPct(g.v / totalV), cor: "var(--viz-2-luz)", aoClicar: function () { abrirMot(g); },
+        dica: { titulo: nomeMotorista(g.k), linhas: [{ nome: "Valor reposto", valor: fBRL(g.v) }, { nome: "Do total", valor: fPct(g.v / totalV) }, { nome: "Chamados", valor: fInt(g.cham.size) }],
+                extra: g.motivo ? ["Principal motivo: " + g.motivo] : [], clique: "Clique para abrir no Detalhe" } };
+    }))));
   pg.appendChild(duas);
 
-  pg.appendChild(painel("Todos os motoristas", "Cada chamado pertence a um motorista; a reposição herda o motorista do chamado que a causou.",
+  pg.appendChild(painel("Todos os motoristas", "Cada chamado pertence a um motorista; a reposição herda o motorista do chamado que a causou. Clique em uma linha para abrir no Detalhe.",
     tabela({
-      id: "motoristas", exportar: "Motoristas", busca: "Buscar motorista ou motivo…", tam: 20, ordem: [2, -1], linhas: gm,
+      id: "motoristas", exportar: "Motoristas", busca: "Buscar motorista ou motivo…", tam: 20, ordem: [2, -1], linhas: gm, aoClicar: abrirMot,
       colunas: [
         { t: "Motorista", k: "texto", v: function (g) { return nomeMotorista(g.k); }, corta: true },
         { t: "Código", k: "texto", v: function (g) { return String(D.dims.motoristas[g.k][0]); } },
@@ -1232,8 +1535,10 @@ function construirFiltros() {
 
   /* motivo */
   var gm = el("div", "fgrupo sep");
-  var contaMotivo = {}, contaMot = {}, vistos = {};
+  var contaMotivo = {}, contaMot = {}, contaCli = {}, vistos = {};
   R.forEach(function (r) {
+    var kc = r.pd + "/c";
+    if (!vistos[kc]) { vistos[kc] = 1; contaCli[r.c] = (contaCli[r.c] || 0) + 1; }
     if (r.m >= 0) { var k = r.pd + "/m" + r.m; if (!vistos[k]) { vistos[k] = 1; contaMotivo[r.m] = (contaMotivo[r.m] || 0) + 1; } }
     if (r.mo >= 0) { var k2 = r.pd + "/o" + r.mo; if (!vistos[k2]) { vistos[k2] = 1; contaMot[r.mo] = (contaMot[r.mo] || 0) + 1; } }
   });
@@ -1270,6 +1575,18 @@ function construirFiltros() {
   gmo.appendChild(REF.mMot);
   f.appendChild(gmo);
 
+  /* cliente: são mais de 2 mil na lista, então ela mostra os 300 que mais pedem e o resto vem pela busca */
+  var gcli = el("div", "fgrupo sep");
+  REF.mCli = multi({
+    rot: "Cliente", conjunto: E.clientes, limite: 300, aoMudar: function () { sincronizar(); desenhar(); },
+    opcoes: function () {
+      return D.dims.clientes.map(function (c, i) { return { id: i, nome: c[1], qt: contaCli[i] || 0 }; })
+        .sort(function (a, b) { return (b.qt - a.qt) || a.nome.localeCompare(b.nome, "pt-BR"); });
+    }
+  });
+  gcli.appendChild(REF.mCli);
+  f.appendChild(gcli);
+
   /* filial */
   var filiais = Array.from(new Set(R.map(function (r) { return r.f; }))).sort(function (a, b) { return a - b; });
   REF.filiais = {};
@@ -1290,11 +1607,44 @@ function construirFiltros() {
   var lim = el("button", "btn-limpar", "Limpar filtros"); lim.type = "button";
   lim.style.marginLeft = "auto";
   lim.addEventListener("click", function () {
-    E.motivos.clear(); E.motoristas.clear(); E.filiais.clear(); E.chamado = "todos";
+    E.motivos.clear(); E.motoristas.clear(); E.filiais.clear(); E.clientes.clear();
+    E.produtos.clear(); E.fornecs.clear(); E.voltar = null; E.chamado = "todos";
     aplicarPreset("ano"); sincronizar(); desenhar();
   });
   f.appendChild(lim);
   raiz.appendChild(f);
+  REF.faixa = el("div", "faixa-ativos");
+  raiz.appendChild(REF.faixa);
+}
+
+/* Faixa sob os filtros: o que veio de um clique e não tem controle na barra (item e fornecedor),
+   mais o botão que devolve a tela de onde o clique saiu. */
+function atualizarFaixa() {
+  var fx = REF.faixa;
+  if (!fx) return;
+  limpar(fx);
+  var tem = false;
+  if (E.voltar) {
+    var pgv = PAGINAS.filter(function (p) { return p.id === E.voltar.pagina; })[0];
+    var bv = el("button", "btn-voltar", "← Voltar para " + (pgv ? pgv.nome : "a tela anterior"));
+    bv.type = "button";
+    bv.addEventListener("click", voltar);
+    fx.appendChild(bv);
+    tem = true;
+  }
+  [["Item", E.produtos, nomeProduto], ["Fornecedor", E.fornecs, nomeFornecedor]].forEach(function (d) {
+    Array.from(d[1]).forEach(function (id) {
+      var t = el("span", "tag-ativa");
+      t.appendChild(el("span", "k", d[0] + ":"));
+      t.appendChild(el("span", "n", d[2](id)));
+      var x = el("button", null, "✕"); x.type = "button"; x.title = "Tirar este filtro";
+      x.addEventListener("click", function () { d[1].delete(id); sincronizar(); desenhar(); });
+      t.appendChild(x);
+      fx.appendChild(t);
+      tem = true;
+    });
+  });
+  fx.style.display = tem ? "flex" : "none";
 }
 
 function sincronizar() {
@@ -1303,7 +1653,8 @@ function sincronizar() {
   REF.de.value = E.de; REF.ate.value = E.ate;
   Object.keys(REF.chamado).forEach(function (k) { REF.chamado[k].classList.toggle("on", E.chamado === k); });
   Object.keys(REF.filiais).forEach(function (n) { REF.filiais[n].classList.toggle("on", E.filiais.has(+n)); });
-  REF.mMotivo.atualizar(); REF.mMot.atualizar();
+  REF.mMotivo.atualizar(); REF.mMot.atualizar(); REF.mCli.atualizar();
+  atualizarFaixa();
 }
 
 function construirMenu() {
@@ -1316,9 +1667,8 @@ function construirMenu() {
     ic.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + p.ic + "</svg>";
     b.appendChild(ic); b.appendChild(document.createTextNode(p.nome));
     b.addEventListener("click", function () {
-      E.pagina = p.id; history.replaceState(null, "", "#" + p.id);
-      $("side").classList.remove("aberto"); $("veu").style.display = "";
-      construirMenu(); desenhar(); window.scrollTo({ top: 0 });
+      E.voltar = null;
+      irPara(p.id); atualizarFaixa(); desenhar();
     });
     m.appendChild(b);
   });

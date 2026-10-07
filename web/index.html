@@ -588,6 +588,69 @@ mark{background:var(--ouro);color:#241900;padding:0 3px;border-radius:4px;font-w
 .sem-chamado-linha td{color:var(--ouro-forte)!important;}
 .vazio-filtro{padding:48px 20px;text-align:center;color:var(--txt-2);font-size:14px;line-height:1.7;}
 .vazio-filtro b{color:var(--ouro-forte);}
+
+/* =====================================================================
+   Clique que leva ao Detalhe + tooltip dos gráficos
+   ===================================================================== */
+.kpi.clicavel,.heroi-card.clicavel,.ano.clicavel,.rank-l.clicavel{cursor:pointer;}
+.kpi.clicavel::before{
+  content:"↗";position:absolute;right:14px;top:11px;font-size:14px;font-weight:800;color:var(--txt-3);
+  opacity:0;transform:translate(-3px,3px);transition:all .2s var(--ease);
+}
+.kpi.clicavel:hover::before,.kpi.clicavel:focus-visible::before{opacity:1;color:var(--ouro);transform:none;}
+.kpi.clicavel:hover,.kpi.clicavel:focus-visible{border-color:var(--ouro-linha);box-shadow:0 22px 50px -30px rgba(233,200,119,.55);}
+.kpi.clicavel:active{transform:translateY(-1px) scale(.992);}
+.heroi-card.clicavel{transition:box-shadow .25s var(--ease),transform .25s var(--ease);}
+.heroi-card.clicavel:hover,.heroi-card.clicavel:focus-visible{transform:translateY(-3px);box-shadow:0 0 0 1px var(--ouro),0 30px 70px -30px rgba(233,200,119,.7);}
+.heroi-card .ver{margin-top:14px;font-size:11.5px;font-weight:800;letter-spacing:.04em;color:var(--ouro);opacity:0;transform:translateY(4px);transition:all .2s var(--ease);}
+.heroi-card.clicavel:hover .ver,.heroi-card.clicavel:focus-visible .ver{opacity:1;transform:none;}
+.ano.clicavel{transition:all .2s var(--ease);}
+.ano.clicavel:hover,.ano.clicavel:focus-visible{border-color:var(--ouro-linha);background:rgba(233,200,119,.06);transform:translateY(-2px);}
+.rank-l.clicavel:hover .rank-nome,.rank-l.clicavel:focus-visible .rank-nome{color:var(--ouro-forte);}
+.rank-l.clicavel:focus-visible{outline-offset:0;}
+.rank-nome{cursor:inherit;}
+
+/* gráficos: faixa de destaque da coluna sob o mouse */
+.gbox svg .banda{fill:rgba(255,255,255,.06);opacity:0;transition:opacity .12s var(--ease);pointer-events:all;}
+.gbox svg g.col:hover .banda{opacity:1;}
+.gbox svg g.col.clicavel{cursor:pointer;}
+.gbox svg rect.seg-clicavel{cursor:pointer;}
+.gbox svg g.col:hover rect.seg-clicavel:hover{filter:brightness(1.35) saturate(1.15);stroke:rgba(255,255,255,.55);stroke-width:1.2;}
+
+/* o tooltip */
+.dica{
+  position:fixed;left:0;top:0;z-index:70;pointer-events:none;min-width:230px;max-width:340px;
+  padding:13px 15px 12px;border-radius:15px;
+  background:linear-gradient(165deg,rgba(26,44,84,.98),rgba(7,15,36,.985));
+  border:1px solid var(--ouro-linha);
+  box-shadow:0 30px 64px -18px #000,0 0 0 1px rgba(255,255,255,.05),0 0 44px -14px rgba(233,200,119,.4);
+  backdrop-filter:blur(10px);
+  opacity:0;transform:translateY(5px) scale(.97);transition:opacity .13s var(--ease),transform .13s var(--ease);
+}
+.dica.on{opacity:1;transform:none;}
+.dica::before{content:"";position:absolute;left:15px;right:15px;top:0;height:2px;border-radius:0 0 3px 3px;background:linear-gradient(90deg,var(--brand-blue-lt),var(--ouro) 55%,var(--brand-red-lt));opacity:.9;}
+.dica-cab{display:flex;align-items:baseline;justify-content:space-between;gap:14px;padding-bottom:9px;margin-bottom:8px;border-bottom:1px solid var(--line-1);}
+.dica-titulo{font-family:"Archivo",system-ui,sans-serif;font-weight:800;font-size:14.5px;color:var(--txt-1);letter-spacing:-.02em;line-height:1.25;}
+.dica-sub{font-size:9.5px;letter-spacing:.15em;text-transform:uppercase;color:var(--ouro);font-weight:800;white-space:nowrap;}
+.dica-linha{display:flex;align-items:center;gap:9px;padding:3.5px 0;font-size:12.5px;color:var(--txt-2);font-weight:600;}
+.dica-linha i{width:10px;height:10px;border-radius:3px;flex:none;box-shadow:0 0 10px -2px currentColor;}
+.dica-linha .dica-nome{flex:1;min-width:0;}
+.dica-linha b{font-family:"JetBrains Mono",ui-monospace,monospace;font-weight:800;color:var(--txt-1);font-size:12.5px;white-space:nowrap;letter-spacing:-.03em;}
+.dica-linha.total{margin-top:6px;padding-top:9px;border-top:1px dashed var(--line-2);}
+.dica-linha.total .dica-nome{color:var(--ouro);font-weight:800;}
+.dica-linha.total b{color:var(--ouro-forte);font-size:14.5px;}
+.dica-extra{font-size:11.5px;color:var(--txt-3);font-weight:600;padding-top:3px;line-height:1.45;}
+.dica-clique{margin-top:10px;padding-top:9px;border-top:1px solid var(--line-1);font-size:11px;font-weight:800;color:var(--ouro);letter-spacing:.02em;line-height:1.4;}
+
+/* faixa sob os filtros: voltar + itens/fornecedores escolhidos por clique */
+.faixa-ativos{display:none;align-items:center;gap:8px;flex-wrap:wrap;margin-top:8px;}
+.btn-voltar{cursor:pointer;border:1px solid var(--ouro-linha);background:linear-gradient(135deg,#8a6518,#b8892a);color:#fff5dd;font-size:12.5px;font-weight:800;padding:8px 15px;border-radius:99px;box-shadow:0 14px 30px -18px var(--ouro);transition:all .18s var(--ease);}
+.btn-voltar:hover{transform:translateY(-1px);filter:brightness(1.1);}
+.tag-ativa{display:inline-flex;align-items:center;gap:7px;max-width:100%;padding:6px 6px 6px 13px;border-radius:99px;background:linear-gradient(135deg,var(--brand-blue),#1b2a94);border:1px solid var(--brand-blue-lt);color:#fff;font-size:12px;font-weight:700;box-shadow:0 10px 24px -14px var(--brand-blue-lt);}
+.tag-ativa .k{color:#c5d0ff;font-weight:800;}
+.tag-ativa .n{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:52ch;}
+.tag-ativa button{cursor:pointer;border:0;background:rgba(255,255,255,.16);color:#fff;width:22px;height:22px;border-radius:50%;font-size:11px;font-weight:800;line-height:1;flex:none;}
+.tag-ativa button:hover{background:rgba(255,255,255,.3);}
 </style>
 </head>
 <body>
