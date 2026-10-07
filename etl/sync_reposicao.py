@@ -49,20 +49,24 @@ def _formatar(n: int | None) -> str:
     return "-" if n is None else f"{n:,}".replace(",", ".")
 
 
-def _aquecer_painel(conn_pg) -> None:
-    """Chama a funcao do painel uma vez, so para deixar o banco quente e provar
-    que ela continua respondendo depois da carga. Se falhar, nao e problema da
-    carga: o painel segue funcionando e o aviso fica no log."""
+def _atualizar_cache(conn_pg) -> None:
+    """Monta o JSON do painel UMA vez e o guarda em reposicao.painel_cache.
+
+    A API do painel so le essa linha (web/api/dados.js): antes ela montava o JSON
+    inteiro a cada visita (~0,7 s com o banco calmo, bem mais com ele ocupado).
+    Mesmo papel do "aquecimento" que o COMERCIAL faz, so que aqui o resultado
+    fica guardado, nao so esquentado. Se falhar, a API cai para painel_dados() e o
+    painel segue funcionando, mais lento."""
     relogio = bi.cronometro()
     try:
         with conn_pg.cursor() as cur:
-            cur.execute("SELECT length(reposicao.painel_dados()::text)")
+            cur.execute("SELECT reposicao.atualizar_painel_cache()")
             tamanho = cur.fetchone()[0]
         conn_pg.commit()
-        log.info("  painel aquecido em %.1fs (resposta de %s KB)", relogio(), round(tamanho / 1024))
+        log.info("  cache do painel atualizado em %.1fs (JSON de %s KB)", relogio(), round(tamanho / 1024))
     except Exception as exc:  # noqa: BLE001
         conn_pg.rollback()
-        log.warning("  nao consegui aquecer o painel: %s", exc)
+        log.warning("  nao consegui atualizar o cache do painel: %s", exc)
 
 
 def main() -> int:
@@ -119,7 +123,7 @@ def main() -> int:
                     bi.registrar_execucao(conn_pg, consulta, "ERRO", None, segundos, f"{type(exc).__name__}: {exc}")
 
             log.info("=" * 70)
-            _aquecer_painel(conn_pg)
+            _atualizar_cache(conn_pg)
 
             log.info("RESUMO DA CARGA")
             log.info("%-20s %-6s %12s %9s", "CONSULTA", "STATUS", "LINHAS", "TEMPO")

@@ -1,11 +1,17 @@
 /**
  * /api/dados — entrega ao painel todo o conteúdo do sistema REPOSIÇÕES.
  *
- * Toda a consulta mora no banco, na função `reposicao.painel_dados()`
- * (ver db/02-views-e-funcao.sql). Aqui é só encanamento: chama a função e
- * devolve o JSON. A função devolve as LINHAS (item reposto x chamado ligado) e
- * os filtros e gráficos são calculados no navegador — o volume é de alguns
- * milhares de linhas, e os cinco filtros se cruzam com tudo na tela.
+ * O JSON do painel NÃO é montado aqui nem a cada visita: a carga (sync_reposicao.py)
+ * o monta uma vez e o guarda em `reposicao.painel_cache` (ver db/05-painel-cache.sql).
+ * Esta rota só lê essa linha. Se ela não existir (banco recém-criado), cai para
+ * `reposicao.painel_dados()`, que monta na hora — mais lenta, mas nunca sem resposta.
+ *
+ * Cache da Vercel: a resposta fica 5 minutos "fresca" e, depois disso, ainda
+ * pode ser entregue velha por até 24 h ENQUANTO a Vercel busca a nova por trás
+ * (stale-while-revalidate). Quem abre o painel nunca espera o banco: espera, no
+ * máximo, o CDN. O aquecedor (etl/aquecer_painel.py) chama esta rota de poucos em
+ * poucos minutos para o CDN jamais ficar frio. O botão "Atualizar" do painel manda
+ * ?atualizar=<hora>, que é outra URL e passa por cima do cache.
  */
 
 const { consultar, faltandoVariaveis, responderErro } = require("./_db");
@@ -23,17 +29,23 @@ module.exports = async function handler(req, res) {
   }
 
   try {
-    const r = await consultar("SELECT reposicao.painel_dados() AS painel", []);
-    const painel = r.rows[0] && r.rows[0].painel;
-    if (!painel) throw new Error("A consulta não devolveu dados.");
+    let r = await consultar("SELECT payload FROM reposicao.painel_cache WHERE id = 1", []);
+    let corpo = r.rows[0] && r.rows[0].payload;
+    let origem = "cache";
+    if (!corpo) {
+      r = await consultar("SELECT reposicao.painel_dados()::text AS payload", []);
+      corpo = r.rows[0] && r.rows[0].payload;
+      origem = "calculado";
+    }
+    if (!corpo) throw new Error("A consulta não devolveu dados.");
 
-    // O ETL roda algumas vezes ao dia; guardar 10 minutos no CDN faz com que só
-    // o primeiro acesso de cada janela toque o banco. O botão "Atualizar" do
-    // painel manda ?atualizar=<hora>, que é outra URL e ignora o cache.
-    res.setHeader("Cache-Control", "public, s-maxage=600, stale-while-revalidate=3600");
+    res.setHeader("Cache-Control", "public, s-maxage=300, stale-while-revalidate=86400, stale-if-error=86400");
     res.setHeader("Content-Type", "application/json; charset=utf-8");
-    res.status(200).send(JSON.stringify(painel));
+    res.setHeader("X-Painel-Origem", origem);
+    res.status(200).send(corpo);
   } catch (e) {
+    // erro nunca vai para o cache do CDN: senão um tropeço de 1 s ficaria 5 minutos na tela
+    res.setHeader("Cache-Control", "no-store");
     responderErro(res, e, process.env.SUPABASE_DB_PORT);
   }
 };

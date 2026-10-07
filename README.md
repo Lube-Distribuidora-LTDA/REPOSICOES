@@ -87,6 +87,7 @@ etl/                       pipeline Python (roda na rede do WinThor)
   sync_reposicao.py        orquestrador
   diagnostico_reposicao.py roda tudo SEM gravar e confere o recorte de 2026 contra a planilha
   executar.py              inicializador à prova de silêncio (usado pelo Agendador)
+  aquecer_painel.py        chama o painel publicado de 5 em 5 minutos para ele nunca abrir frio
   instalar_e_agendar.ps1   instala em C:\BI\REPOSICOES e cria a tarefa
 web/                       painel (estático + 1 função serverless)
   api/dados.js             chama reposicao.painel_dados()
@@ -98,6 +99,7 @@ web/                       painel (estático + 1 função serverless)
 | `db/01-schema.sql` | schema `reposicao`, 3 fatos, `controle_carga`, RLS ligado e sem políticas |
 | `db/02-views-e-funcao.sql` | `vw_vinculo`, `vw_linhas` e `painel_dados()` — **é a definição vigente** |
 | `db/03-valor-em-centavos.sql`, `db/04-painel-dados-compacto.sql` | registro da ordem de aplicação |
+| `db/05-painel-cache.sql` | `painel_cache` + `atualizar_painel_cache()`: a resposta do painel pronta no banco |
 
 ## Como rodar
 
@@ -124,6 +126,23 @@ node servidor_local.js        # abre em http://localhost:3101
 Projeto novo, **Root Directory = `web`**. Variáveis de ambiente (quem cadastra é o Júlio): `SUPABASE_DB_HOST`, `SUPABASE_DB_PORT` (5432), `SUPABASE_DB_NAME`, `SUPABASE_DB_USER`, `SUPABASE_DB_PASSWORD`.
 
 > **Acesso:** a proteção "Standard" da Vercel não cobre o endereço principal do projeto (ver a nota da Vercel no cérebro). O painel tem nome de cliente e de motorista; a porta que fecha o endereço sem plano pago é o guarda da SENTINELA LUBE.
+
+## Desempenho: por que o painel abre rápido (e o que fazer se não abrir)
+
+**O problema (medido em 2026-10-07).** No painel publicado, a primeira chamada do dia à `/api/dados` deu **504 depois de 60 s**, a segunda levou 13 s e a terceira 0,16 s (já vinda do cache da Vercel). Do computador do Júlio, a primeira conexão com o pooler do Supabase depois de um tempo parado levou **34,7 s** e as três seguintes 0,18 s. O tempo todo era a **abertura da conexão com o banco "a frio"** — a consulta em si leva milissegundos. Tentar várias conexões em paralelo não ajuda: todas esperam o mesmo pooler acordar.
+
+**A solução: quem abre o painel não espera o banco.**
+
+| Camada | O que faz |
+|---|---|
+| `reposicao.painel_cache` | A carga monta o JSON do painel **uma vez** e o guarda numa linha. A API só lê essa linha (antes montava o JSON inteiro a cada visita: ~0,7 s com o banco calmo). Mudou `painel_dados()`? Rode `SELECT reposicao.atualizar_painel_cache();`. |
+| CDN da Vercel | `s-maxage=300, stale-while-revalidate=86400`: a resposta fica 5 min fresca e, depois, **ainda é entregue na hora** (por até 24 h) enquanto a Vercel busca a nova por trás. |
+| **Aquecedor** (`etl/aquecer_painel.py`) | Chama o painel de **5 em 5 minutos** (tarefa `Reposicoes - Aquecer painel`, criada pelo instalador). É ele quem espera o banco acordar — nunca quem está mostrando o sistema. Registra cada chamada em `aquecer_painel.log` (`cdn=HIT` = veio do CDN). Precisa de `PAINEL_URL` no `ENV`. |
+| Cópia no navegador | O painel guarda os últimos dados no IndexedDB. Na visita seguinte **abre na hora** com a cópia, mostra "dados guardados · atualizando…" e troca pelos novos se houver carga nova. |
+| Conexão | Tentativas escalonadas (outra sai em paralelo se a primeira não responder em 4 s), para não depender de uma única conexão travada. |
+| Tela de espera | Nunca fica muda: relógio depois de 3 s, e depois de 12 s explica que o banco está acordando. |
+
+**Se abrir devagar mesmo assim:** (1) veja `C:\BI\REPOSICOES\aquecer_painel.log` — linhas `ERRO` ou ausência de linhas recentes = o aquecedor não está rodando (tarefa não instalada, máquina suspensa ou fora da rede); (2) `curl -sI https://<painel>/api/dados` e olhe `X-Vercel-Cache` (`HIT` é o normal) e `Age`; (3) lembre que **a primeira visita depois de um deploy** é sempre fria. **Shift+clique em "Atualizar"** força a leitura direta do banco (diagnóstico); o clique normal usa a cópia do CDN.
 
 ## Limites conhecidos
 

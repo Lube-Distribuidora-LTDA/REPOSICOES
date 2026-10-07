@@ -1706,20 +1706,88 @@ function falhou(msg, detalhe) {
   c.appendChild(b);
 }
 
+/* Tela de espera: nunca fica muda. Depois de 3 s mostra o relógio; depois de 12 s explica o motivo.
+   (Medido: com o banco parado, a primeira leitura chega a levar de 30 s a 1 min; nas seguintes, 0,2 s.) */
+function textoDeEspera() {
+  var t = $("carregandoTexto");
+  if (!t) return function () {};
+  var ini = Date.now();
+  var id = setInterval(function () {
+    var s = Math.round((Date.now() - ini) / 1000);
+    if (s < 3) return;
+    t.textContent = s < 12
+      ? "Buscando os dados… " + s + " s"
+      : "O banco estava parado e está acordando — a primeira leitura depois de um tempo parado pode levar até 1 minuto. Da próxima vez abre na hora. " + s + " s";
+  }, 1000);
+  return function () { clearInterval(id); };
+}
+
 function buscar(atualizar) {
   var url = "/api/dados" + (atualizar ? "?atualizar=" + Date.now() : "");
-  var aviso = setTimeout(function () {
-    var t = $("carregandoTexto");
-    if (t) t.textContent = "O banco pode estar acordando — a primeira leitura do dia demora um pouco…";
-  }, 7000);
-  return fetch(url, { cache: atualizar ? "reload" : "default" }).then(function (r) {
-    clearTimeout(aviso);
+  var parar = atualizar ? function () {} : textoDeEspera();
+  /* "no-store": o navegador não usa nem guarda a resposta no cache HTTP dele. Com o stale-while-revalidate
+     da API, o Chrome entregava a resposta velha (2 ms, 0 bytes) sem avisar — a cópia daqui de baixo (Guardado)
+     faz o mesmo, mas diz que é cópia. O cache do CDN da Vercel continua valendo: ele é do lado do servidor. */
+  return fetch(url, { cache: "no-store" }).then(function (r) {
+    parar();
     return r.json().catch(function () { return {}; }).then(function (j) {
       if (!r.ok) { var err = new Error(j.mensagem || ("HTTP " + r.status)); err.detalhe = (j.detalhe ? j.detalhe + " · " : "") + "HTTP " + r.status; throw err; }
       return j;
     });
-  }, function (e) { clearTimeout(aviso); throw e; });
+  }, function (e) { parar(); throw e; });
 }
+
+/* ---------------------------------------------------------------------------
+ * Cópia no navegador: o painel abre com os ÚLTIMOS dados vistos e atualiza por baixo.
+ * IndexedDB, e não localStorage: o JSON passa de 1 MB e cresce com o histórico.
+ * Se o navegador não deixar guardar (janela anônima, política da empresa), tudo
+ * segue como antes — só perde a abertura instantânea.
+ * ------------------------------------------------------------------------ */
+var Guardado = (function () {
+  var NOME = "lube-reposicoes", LOJA = "painel", CHAVE = "ultimo";
+  function abrir() {
+    return new Promise(function (ok, erro) {
+      try {
+        var rq = indexedDB.open(NOME, 1);
+        rq.onupgradeneeded = function () { rq.result.createObjectStore(LOJA); };
+        rq.onsuccess = function () { ok(rq.result); };
+        rq.onerror = function () { erro(rq.error); };
+      } catch (e) { erro(e); }
+    });
+  }
+  function ler() {
+    return abrir().then(function (db) {
+      return new Promise(function (ok) {
+        var rq = db.transaction(LOJA, "readonly").objectStore(LOJA).get(CHAVE);
+        rq.onsuccess = function () { ok(rq.result || null); };
+        rq.onerror = function () { ok(null); };
+      });
+    }).catch(function () { return null; });
+  }
+  function gravar(obj) {
+    return abrir().then(function (db) {
+      return new Promise(function (ok) {
+        var tx = db.transaction(LOJA, "readwrite");
+        tx.objectStore(LOJA).put(obj, CHAVE);
+        tx.oncomplete = function () { ok(); };
+        tx.onerror = function () { ok(); };
+      });
+    }).catch(function () { /* sem cópia: segue sem */ });
+  }
+  return { ler: ler, gravar: gravar };
+})();
+var VERSAO_GUARDADO = 1;   // mude se o formato do JSON do banco mudar de um jeito que o código novo não leia
+
+/* aviso rápido no canto (reaproveita o balão "trabalhando") */
+var tmrAviso = null;
+function aviso(texto) {
+  var b = $("trabalhando");
+  if (!b) return;
+  b.textContent = texto; b.classList.add("on");
+  clearTimeout(tmrAviso);
+  tmrAviso = setTimeout(function () { b.classList.remove("on"); b.textContent = "Buscando no banco…"; }, 4200);
+}
+function notaDeOrigem(texto) { var n = $("sync-obs"); if (n) n.textContent = texto ? " · " + texto : ""; }
 
 function iniciar(json, primeira) {
   preparar(json);
@@ -1745,14 +1813,43 @@ function iniciar(json, primeira) {
 document.addEventListener("DOMContentLoaded", function () {
   $("menu-btn").addEventListener("click", function () { $("side").classList.toggle("aberto"); });
   $("veu").addEventListener("click", function () { $("side").classList.remove("aberto"); });
-  $("btn-atualizar").addEventListener("click", function () {
+  /* "Atualizar" pede a cópia que o CDN já tem (instantânea) e avisa se há carga nova. A carga do banco só muda
+     quando o ETL roda, então furar o CDN a cada clique só levaria quem está mostrando o sistema a esperar o banco
+     acordar. Shift+clique força a leitura direta do banco (diagnóstico). */
+  $("btn-atualizar").addEventListener("click", function (ev) {
     var b = $("btn-atualizar"); b.classList.add("girando"); b.disabled = true;
-    buscar(true).then(function (j) { iniciar(j, false); }, function (e) { alert("Não consegui atualizar: " + e.message); })
+    var forcar = !!ev.shiftKey;
+    buscar(forcar).then(function (j) {
+      Guardado.gravar({ versao: VERSAO_GUARDADO, salvoEm: Date.now(), json: j });
+      if (j.carga !== D.carga) { iniciar(j, false); aviso("Dados atualizados."); }
+      else aviso("Já está na última carga (" + (D.carga ? new Date(D.carga).toLocaleString("pt-BR", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" }) : "—") + ").");
+      notaDeOrigem("");
+    }, function (e) { alert("Não consegui atualizar: " + e.message); })
       .then(function () { b.classList.remove("girando"); b.disabled = false; });
   });
   var tmr = null;
   window.addEventListener("resize", function () { clearTimeout(tmr); tmr = setTimeout(function () { if (D) desenharGraficos(); }, 160); });
-  buscar(false).then(function (j) { iniciar(j, true); }, function (e) { falhou(e.message || "Não consegui ler o banco.", e.detalhe || ""); });
+
+  /* A rede começa JÁ; a cópia local é lida ao mesmo tempo. Quem chegar primeiro desenha a tela.
+     Se a cópia ganhar, a tela abre na hora e a rede só atualiza por baixo (e avisa se mudou algo). */
+  var iniciado = false, redeChegou = false;
+  var pedido = buscar(false);
+  Guardado.ler().then(function (g) {
+    if (redeChegou || iniciado || !g || g.versao !== VERSAO_GUARDADO || !g.json || !g.json.linhas) return;
+    try { iniciar(g.json, true); iniciado = true; notaDeOrigem("dados guardados · atualizando…"); }
+    catch (e) { console.error("cópia local inválida", e); }
+  });
+  pedido.then(function (j) {
+    redeChegou = true;
+    Guardado.gravar({ versao: VERSAO_GUARDADO, salvoEm: Date.now(), json: j });
+    if (!iniciado) { iniciar(j, true); iniciado = true; return; }
+    if (j.carga !== D.carga) { iniciar(j, false); aviso("Dados atualizados."); }
+    notaDeOrigem("");
+  }, function (e) {
+    redeChegou = true;
+    if (iniciado) { notaDeOrigem("sem resposta do banco · mostrando os últimos dados guardados"); return; }
+    falhou(e.message || "Não consegui ler o banco.", e.detalhe || "");
+  });
 });
 
 })();

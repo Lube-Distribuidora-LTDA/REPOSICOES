@@ -57,7 +57,10 @@ http.createServer((req, res) => {
     res.status = (c) => { res.statusCode = c; return res; };
     res.json = (o) => { res.setHeader("Content-Type", "application/json"); res.end(JSON.stringify(o)); };
     res.send = (s) => res.end(s);
-    return dados(req, res);
+    /* ATRASO_API_MS=8000 node servidor_local.js  -> simula o banco acordando, para ver a tela de espera e a cópia local */
+    const argAtraso = (process.argv.find((a) => a.startsWith("--atraso=")) || "").slice(9);
+    const atraso = Number(process.env.ATRASO_API_MS || argAtraso || 0);
+    return atraso ? setTimeout(() => dados(req, res), atraso) : dados(req, res);
   }
   const f = path.join(WEB, u.pathname === "/" ? "index.html" : decodeURIComponent(u.pathname));
   // so serve o que esta dentro de web/, e nunca a pasta de codigo do servidor nem o ENV

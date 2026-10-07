@@ -30,6 +30,10 @@ maquina continua com a versao antiga.
                                referencia nas observacoes do pedido.
  diagnostico_reposicao.py .... roda tudo SEM gravar e confere o recorte de
                                2026 contra a planilha consolidada.
+ aquecer_painel.py ........... chama o painel publicado de 5 em 5 minutos para
+                               ele nunca abrir frio (le PAINEL_URL do ENV). O
+                               resultado de cada chamada fica em
+                               aquecer_painel.log.
  executar.py ................. inicializador a prova de silencio: se algo
                                quebrar antes do log existir, o motivo vai
                                para falha_inicial.log.
@@ -39,7 +43,8 @@ maquina continua com a versao antiga.
 ---------------------------------------------------------------------------
  instalar_e_agendar.ps1 ...... copia tudo para C:\BI\REPOSICOES e cria a
                                tarefa "Reposicoes - Sync": 07:35, 09:35,
-                               11:35, 13:35, 15:35, 17:35 e 22:35.
+                               11:35, 13:35, 15:35, 17:35 e 22:35, e a tarefa
+                               "Reposicoes - Aquecer painel": de 5 em 5 minutos.
 
 ---------------------------------------------------------------------------
  COMO SABER SE A CARGA ENTROU

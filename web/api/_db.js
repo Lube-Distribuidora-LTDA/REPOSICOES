@@ -6,19 +6,26 @@
  * então a chave pública não lê nada: só quem conecta com credencial de
  * servidor — o ETL e estas funções — enxerga os dados.
  *
- * Quase tudo aqui foi aprendido apanhando na publicação do GESTÃO FINANCEIRO,
- * que usa o mesmo projeto do Supabase. Os comentários dizem o porquê de cada
- * ajuste; sem eles, o próximo sistema repete o mesmo dia de depuração.
- *
  * Variáveis necessárias (Settings › Environment Variables):
  *   SUPABASE_DB_HOST      aws-0-sa-east-1.pooler.supabase.com
- *   SUPABASE_DB_PORT      5432   (ver a nota sobre pooler abaixo)
+ *   SUPABASE_DB_PORT      5432   (session pooler; o 6543 conecta e trava neste projeto)
  *   SUPABASE_DB_NAME      postgres
  *   SUPABASE_DB_USER      postgres.ivcnotrynogaljrvvyes
  *   SUPABASE_DB_PASSWORD  a senha do projeto DATA WAREHOUSE
+ *
+ * POR QUE ESTA VERSÃO NÃO USA POOL (2026-10-07)
+ * Medido no painel publicado: a primeira chamada do dia deu 504 depois de 60 s
+ * e a seguinte levou 13 s — o tempo inteiro era a ABERTURA da conexão com o
+ * pooler a frio, não a consulta (a consulta leva milissegundos). Um pool com
+ * uma tentativa de 15 s e três repetições em série esperava cada tentativa
+ * travada até o fim. Agora cada chamada abre a conexão em TENTATIVAS
+ * ESCALONADAS: se a primeira ainda não respondeu em 4 s, sai outra em
+ * paralelo, e depois outra; vence a que conectar primeiro e as demais são
+ * encerradas. Numa função serverless, que atende uma consulta e dorme, uma
+ * conexão por chamada custa o mesmo que manter um pool.
  */
 
-const { Pool } = require("pg");
+const { Client } = require("pg");
 
 /* O pooler do Supabase responde em IPv4. Em ambiente sem rota IPv6, tentar AAAA
    primeiro deixa a conexão pendurada até a função estourar o tempo. */
@@ -31,7 +38,11 @@ try { require("dns").setDefaultResultOrder("ipv4first"); } catch (_) { /* Node a
 const REF_ESPERADO = "ivcnotrynogaljrvvyes";
 const OBRIGATORIAS = ["SUPABASE_DB_HOST", "SUPABASE_DB_USER", "SUPABASE_DB_PASSWORD"];
 
-let pool = null;
+/* Quanto esperar antes de disparar outra tentativa em paralelo, quantas no máximo,
+   e quanto cada uma pode levar sozinha antes de desistir. */
+const ESCALONAR_MS = Number(process.env.DB_ESCALONAR_MS || 4000);
+const MAX_TENTATIVAS = Number(process.env.DB_MAX_TENTATIVAS || 3);
+const TEMPO_POR_TENTATIVA_MS = Number(process.env.DB_TEMPO_TENTATIVA_MS || 14000);
 
 function configuracao() {
   const usuario = process.env.SUPABASE_DB_USER || "";
@@ -40,78 +51,77 @@ function configuracao() {
   }
   return {
     host: process.env.SUPABASE_DB_HOST || "aws-0-sa-east-1.pooler.supabase.com",
-    /* 5432 = session pooler. O padrão da casa para função serverless é o
-       transaction pooler (6543), mas o deste projeto conecta e trava a consulta
-       ("Query read timeout"), enquanto o 5432 responde em menos de 1s — medido
-       da Vercel em 25/09/2026. Se o 6543 voltar ao normal, basta trocar a
-       variável: o código lê a porta do ambiente. */
     port: Number(process.env.SUPABASE_DB_PORT || 5432),
     database: process.env.SUPABASE_DB_NAME || "postgres",
     user: usuario,
     password: process.env.SUPABASE_DB_PASSWORD,
     ssl: { rejectUnauthorized: false },
-    max: 1,
-    idleTimeoutMillis: 50000,
-    /* o primeiro handshake leva de 7 a 15s com o pooler frio; abaixo disso a
-       conexão é cortada antes mesmo de autenticar. */
-    connectionTimeoutMillis: 15000,
+    connectionTimeoutMillis: TEMPO_POR_TENTATIVA_MS,
     statement_timeout: 40000,
     application_name: "painel-reposicoes",
   };
 }
 
-function obterPool() {
-  if (!pool) {
-    pool = new Pool(configuracao());
-    /* Se a conexão ociosa cair sozinha (o pooler reciclou, a rede oscilou),
-       descarta o Pool: a próxima chamada cria um do zero. */
-    const meu = pool;
-    pool.on("error", (e) => {
-      console.error("Conexão Postgres ociosa caiu:", e && e.message);
-      if (pool === meu) pool = null;   // nunca zerar o pool de outra chamada
-    });
-  }
-  return pool;
+/**
+ * Abre UMA conexão pelo caminho mais rápido: tentativas escalonadas, a primeira
+ * que conectar vence. Rejeita só quando TODAS falharam.
+ */
+function conectar() {
+  const cfg = configuracao();
+  return new Promise((resolve, reject) => {
+    let iniciadas = 0, falhas = 0, vencida = false, ultimoErro = null, timer = null;
+
+    function proxima() {
+      if (vencida || iniciadas >= MAX_TENTATIVAS) return;
+      iniciadas++;
+      const c = new Client(cfg);
+      // um Client descartado pode emitir 'error' depois; sem este ouvinte isso derrubaria a função
+      c.on("error", () => { /* já descartado ou em falha tratada abaixo */ });
+      c.connect().then(
+        () => {
+          if (vencida) { c.end().catch(() => {}); return; }   // chegou tarde: encerra
+          vencida = true;
+          clearTimeout(timer);
+          resolve(c);
+        },
+        (e) => {
+          ultimoErro = e;
+          falhas++;
+          if (vencida) return;
+          if (falhas >= MAX_TENTATIVAS) { clearTimeout(timer); reject(ultimoErro); return; }
+          // falhou rápido (ex.: recusou): não espera o escalonamento, tenta de novo já
+          if (iniciadas < MAX_TENTATIVAS) { clearTimeout(timer); proxima(); }
+        }
+      );
+      if (iniciadas < MAX_TENTATIVAS) {
+        clearTimeout(timer);
+        timer = setTimeout(proxima, ESCALONAR_MS);
+      }
+    }
+    proxima();
+  });
 }
 
 function erroDeConexao(e) {
-  return /timeout|ECONNRESET|ECONNREFUSED|terminated|ETIMEDOUT|EAUTHQUERY|after calling end/i
+  return /timeout|ECONNRESET|ECONNREFUSED|terminated|ETIMEDOUT|EAUTHQUERY|Connection ended/i
     .test(String((e && e.message) || ""));
 }
 
 /**
- * Descarta um pool que deu erro.
- *
- * O cuidado aqui não é firula: a versão anterior fazia `if (pool) await
- * pool.end()` dentro do catch, ou seja, encerrava o que estivesse na variável
- * NAQUELE momento — que podia já ser um pool novo, criado por outra chamada
- * em paralelo. O resultado era a chamada vizinha morrer com "Cannot use a pool
- * after calling end on the pool", que foi exatamente o erro do primeiro acesso
- * em produção. Agora só se descarta o pool que a própria chamada usou, a troca
- * da referência acontece ANTES do end(), e não se espera o encerramento.
+ * Roda a consulta numa conexão nova e a encerra. Se a conexão morrer no meio da
+ * consulta (pooler reciclou), refaz UMA vez, numa conexão nova.
  */
-function descartar(usado) {
-  if (pool === usado) pool = null;
-  if (usado) Promise.resolve(usado.end()).catch(() => { /* já estava morto */ });
-}
-
-/**
- * Roda a consulta. A função e o pooler acordam juntos: a primeira chamada
- * depois de um tempo parado pode levar dezenas de segundos ou não completar.
- * Quando o erro é de conexão, o pool é descartado e a chamada refeita — a
- * segunda tentativa costuma responder na hora.
- */
-async function consultar(sql, valores, tentativas = 3) {
+async function consultar(sql, valores) {
   let ultimoErro;
-  for (let i = 0; i < tentativas; i++) {
-    const meuPool = obterPool();
+  for (let i = 0; i < 2; i++) {
+    const c = await conectar();
     try {
-      return await meuPool.query(sql, valores);
+      return await c.query(sql, valores);
     } catch (e) {
       ultimoErro = e;
       if (!erroDeConexao(e)) throw e;
-      descartar(meuPool);
-      if (i < tentativas - 1) await new Promise((r) => setTimeout(r, 400 * (i + 1)));
+    } finally {
+      c.end().catch(() => {});
     }
   }
   throw ultimoErro;
@@ -121,9 +131,7 @@ function faltandoVariaveis() {
   return OBRIGATORIAS.filter((v) => !process.env[v]);
 }
 
-/** Aceita só AAAA-MM-DD. Qualquer outra coisa vira null (a função do banco tem
- *  padrão próprio). Nada do que vem na URL entra na consulta sem passar por
- *  aqui, e mesmo assim vai como parâmetro, nunca concatenado. */
+/** Aceita só AAAA-MM-DD. Qualquer outra coisa vira null. */
 function dataOuNulo(v) {
   return typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v) ? v : null;
 }
@@ -140,4 +148,4 @@ function responderErro(res, e, porta) {
   });
 }
 
-module.exports = { consultar, faltandoVariaveis, dataOuNulo, responderErro };
+module.exports = { consultar, conectar, faltandoVariaveis, dataOuNulo, responderErro };

@@ -45,11 +45,13 @@ $ARQUIVOS = @(
     "2 - SISTEMA REPOSICOES\sync_reposicao.py",
     "2 - SISTEMA REPOSICOES\diagnostico_reposicao.py",
     "2 - SISTEMA REPOSICOES\executar.py",
+    "2 - SISTEMA REPOSICOES\aquecer_painel.py",
     "2 - SISTEMA REPOSICOES\_teste_agendador.py",
     "2 - SISTEMA REPOSICOES\requirements.txt"
 )
 
-$NOME_SYNC   = "Reposicoes - Sync"
+$NOME_SYNC    = "Reposicoes - Sync"
+$NOME_AQUECER = "Reposicoes - Aquecer painel"
 $NOME_COBAIA = "Reposicoes - teste de agendamento"
 
 function Pausar {
@@ -291,6 +293,35 @@ try {
         }
     }
 
+    # --- tarefa que se repete o dia inteiro ---------------------------------
+    # O Agendador nao tem "a cada 5 minutos" direto: monta-se a repeticao em
+    # cima de um gatilho diario que recomeca todo dia a meia-noite.
+    function RegistrarRepetida {
+        param($Nome, $Argumento, $Minutos, $Descricao, $Modo)
+
+        $acao = New-ScheduledTaskAction -Execute $pythonw -Argument $Argumento -WorkingDirectory $Destino
+        $gatilho = New-ScheduledTaskTrigger -Daily -At (Get-Date "00:00")
+        $repete  = New-ScheduledTaskTrigger -Once -At (Get-Date "00:00") `
+                     -RepetitionInterval (New-TimeSpan -Minutes $Minutos) `
+                     -RepetitionDuration (New-TimeSpan -Hours 23 -Minutes 59)
+        $gatilho.Repetition = $repete.Repetition
+
+        $configLeve = New-ScheduledTaskSettingsSet `
+            -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 4) `
+            -MultipleInstances IgnoreNew -Hidden
+
+        if ($Modo -eq "Senha") {
+            Register-ScheduledTask -TaskName $Nome -Action $acao -Trigger $gatilho `
+                -Settings $configLeve -User $Usuario -Password $senha `
+                -Description $Descricao -Force | Out-Null
+        } else {
+            $p = New-ScheduledTaskPrincipal -UserId $Usuario -LogonType $Modo -RunLevel Limited
+            Register-ScheduledTask -TaskName $Nome -Action $acao -Trigger $gatilho `
+                -Settings $configLeve -Principal $p -Description $Descricao -Force | Out-Null
+        }
+    }
+
     # --- a cobaia: prova se o modo realmente dispara um processo ------------
     $marca = Join-Path $Destino "_teste_agendador.txt"
 
@@ -376,6 +407,15 @@ try {
         -Descricao "Reposicoes e Chamados: rotinas 8352 e 8353 do WinThor para o DATA WAREHOUSE."
     Write-Host "  [ok] $NOME_SYNC" -ForegroundColor Green
 
+    # O aquecedor chama o painel publicado de 5 em 5 minutos. Sem ele, quem abre o
+    # sistema depois de um tempo parado espera o banco "acordar" (medido: de 13 s
+    # a 60 s) - justo na frente de quem se quer impressionar.
+    RegistrarRepetida -Nome $NOME_AQUECER `
+        -Argumento ('"' + $bootstrap + '" --alvo aquecer_painel.py') `
+        -Minutos 5 -Modo $modoBom.nome `
+        -Descricao "Reposicoes: chama o painel de 5 em 5 minutos para ele nunca abrir frio."
+    Write-Host "  [ok] $NOME_AQUECER (a cada 5 minutos)" -ForegroundColor Green
+
     # --- carga de teste de verdade -----------------------------------------
     $log   = Join-Path $Destino "sync_reposicao.log"
     $falha = Join-Path $Destino "falha_inicial.log"
@@ -429,6 +469,7 @@ try {
     Write-Host "  conta que executa   : $Usuario"
     Write-Host "  modo                : $($modoBom.texto)"
     Write-Host "  cargas              : $($horarios -join ', ')"
+    Write-Host "  aquecer o painel    : a cada 5 minutos"
     Write-Host "  pasta de execucao   : $Destino"
     Write-Host "================================================================" -ForegroundColor Cyan
     Write-Host ""
@@ -436,7 +477,7 @@ try {
     Write-Host "reposicao.controle_carga no Supabase (projeto DATA WAREHOUSE)." -ForegroundColor Cyan
     if ($modoBom.nome -eq "Interactive") {
         Write-Host ""
-        Write-Host "ATENCAO: neste modo a carga das 22:35 so acontece se" -ForegroundColor Yellow
+        Write-Host "ATENCAO: neste modo a carga das 22:35 e o aquecedor so rodam se" -ForegroundColor Yellow
         Write-Host "voce deixar o Windows logado (pode bloquear a tela, mas nao deslogar)." -ForegroundColor Yellow
     }
 
