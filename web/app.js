@@ -424,10 +424,64 @@ function somaMensalAno() {
   return m;
 }
 
-function somaPeriodo(de, ate) {
-  var s = 0;
-  R.forEach(function (r) { if (r.d >= de && r.d <= ate && passaSemPeriodo(r)) s += r.v; });
-  return s;
+/* ---------------------------------------------------------------------------
+ * Comparação do cartão principal: com o período ANTERIOR e com o mesmo período do ano anterior
+ *
+ * Período anterior = o que vem imediatamente antes e tem o mesmo tamanho:
+ *   · meses fechados (1º ao último dia): os mesmos N meses antes — jan/26 contra dez/25, fev contra jan,
+ *     jan–mar contra out–dez. Fevereiro (28 dias) contra janeiro (31) compara mês com mês, não dia com dia;
+ *   · "até hoje" (o último mês ainda em andamento): os mesmos N meses antes, até o mesmo dia do mês;
+ *   · datas livres: os mesmos N dias imediatamente antes.
+ * Os dois valem com os MESMOS filtros do período escolhido (motivo, chamado, motorista, cliente, filial...).
+ * ------------------------------------------------------------------------ */
+function idxMes(d) { return +d.slice(0, 4) * 12 + (+d.slice(5, 7) - 1); }
+function ymDeIdx(i) { return Math.floor(i / 12) + "-" + String(i % 12 + 1).padStart(2, "0"); }
+function fMesAno(ym) { return MESES[+ym.slice(5, 7) - 1].toLowerCase() + "/" + ym.slice(0, 4); }
+function isoDe(d) { return d.toISOString().slice(0, 10); }
+
+function periodoAnterior(de, ate) {
+  /* o dado começa em 02/01 (01/01 é feriado): para a conta de períodos, trate como começo do mês */
+  if (de === MIND && +de.slice(8) <= 5) de = de.slice(0, 7) + "-01";
+  var inicioDeMes = de.slice(8) === "01";
+  var fimDeMes = ate === ultimoDia(ate.slice(0, 7));
+  if (inicioDeMes && (fimDeMes || ate === MAXD)) {
+    var n = idxMes(ate) - idxMes(de) + 1;
+    var ymFim = ymDeIdx(idxMes(ate) - n), fimMesAnt = ultimoDia(ymFim);
+    return {
+      de: ymDeIdx(idxMes(de) - n) + "-01",
+      ate: fimDeMes ? fimMesAnt : ymFim + "-" + String(Math.min(+ate.slice(8), +fimMesAnt.slice(8))).padStart(2, "0")
+    };
+  }
+  var dias = diasEntre(ate, de) + 1;
+  return { de: isoDe(new Date(Date.parse(de) - dias * 864e5)), ate: isoDe(new Date(Date.parse(de) - 864e5)) };
+}
+
+/* nome curto de um período: "dez/2025", "2025", "mar/2025 a dez/2025", "set/2026 (dias 1 a 2)" ou as datas */
+function rotPeriodo(de, ate) {
+  var ymDe = de.slice(0, 7), ymAte = ate.slice(0, 7);
+  var inicioDeMes = de.slice(8) === "01", fimDeMes = ate === ultimoDia(ymAte);
+  if (inicioDeMes && fimDeMes) {
+    if (ymDe === ymAte) return fMesAno(ymDe);
+    if (de.slice(5, 7) === "01" && ate.slice(5, 7) === "12" && de.slice(0, 4) === ate.slice(0, 4)) return de.slice(0, 4);
+    return fMesAno(ymDe) + " a " + fMesAno(ymAte);
+  }
+  if (inicioDeMes && ymDe === ymAte) return fMesAno(ymDe) + " (dias 1 a " + (+ate.slice(8)) + ")";
+  return fData(de) + " a " + fData(ate);
+}
+
+/* o período comparado precisa estar dentro do que o banco tem (o dado começa em MIND; 01/01 é feriado, sem pedido) */
+function temDadoDesde(de) { return de >= MIND || diasEntre(MIND, de) <= 3; }
+
+/* resumo de um período qualquer, com os filtros atuais (menos o período) */
+function resumoPeriodo(de, ate) {
+  var B = [], F = [];
+  for (var i = 0; i < R.length; i++) {
+    var r = R[i];
+    if (r.d < de || r.d > ate || !passaDim(r)) continue;
+    B.push(r);
+    if (passaChamado(r)) F.push(r);
+  }
+  return resumir(F, B);
 }
 
 function mediaAnual() {
@@ -507,6 +561,47 @@ function kpi(cls, rotulo, valor, sub, ajuda, aoClicar) {
   k.appendChild(s);
   if (aoClicar) ligarClique(k, aoClicar);
   return k;
+}
+
+/* uma linha do cartão principal: "PERÍODO ANTERIOR  ▲ 12,3% vs dez/2025  R$ 27.037,92" */
+function comparacao(titulo, K, per, rot) {
+  var linha = el("div", "comp");
+  linha.appendChild(el("span", "k", titulo));
+  if (per.ate < MIND || !temDadoDesde(per.de)) {
+    linha.appendChild(el("span", "delta igual", "sem dados de " + rot));
+    return linha;
+  }
+  var Pp = resumoPeriodo(per.de, per.ate);
+  linha.appendChild(delta(K.v, Pp.v, rot));
+  linha.appendChild(el("span", "v", fBRL(Pp.v)));
+  linha.classList.add("clicavel");
+  ligarClique(linha, function (ev) {
+    ev.stopPropagation();                    // o cartão inteiro também é clicável: aqui abre o período COMPARADO
+    detalhar(function () { definirPeriodo(per.de, per.ate); }, [COL_DET.valor, -1]);
+  });
+  function dif(a, b, fmt) {
+    if (!b) return fmt(a) + " contra " + fmt(b);
+    var x = a / b - 1;
+    return fmt(a) + " contra " + fmt(b) + " (" + (x > 0 ? "+" : x < 0 ? "−" : "") + nf1.format(Math.abs(x) * 100) + "%)";
+  }
+  Dica.anexar(linha, function () {
+    var d = K.v - Pp.v;
+    return {
+      titulo: "Contra " + rot, sub: fData(per.de) + " a " + fData(per.ate),
+      linhas: [
+        { nome: "Período escolhido", valor: fBRL(K.v) },
+        { nome: "Período comparado", valor: fBRL(Pp.v) },
+        { nome: "Diferença", valor: (d > 0 ? "+" : d < 0 ? "−" : "") + fBRL(Math.abs(d)) }
+      ],
+      extra: [
+        "Reposições: " + dif(K.ped, Pp.ped, fInt),
+        "Ticket médio: " + dif(K.ped ? K.v / K.ped : 0, Pp.ped ? Pp.v / Pp.ped : 0, fBRL),
+        "% com chamado: " + fPct(K.pctPed) + " contra " + fPct(Pp.pctPed)
+      ],
+      clique: "Clique para abrir " + rot + " no Detalhe"
+    };
+  });
+  return linha;
 }
 
 function delta(atual, anterior, rotulo) {
@@ -993,7 +1088,8 @@ function paginaGeral(C) {
   Object.keys(porMes).forEach(function (m) { if (m.slice(0, 4) === anoFim) acumFim += porMes[m]; });
   var acumAnt = 0, ateAnt = deslocarAno(E.ate, -1);
   R.forEach(function (r) { if (r.d >= (+anoFim - 1) + "-01-01" && r.d <= ateAnt && passaSemPeriodo(r)) acumAnt += r.v; });
-  var vAnt = somaPeriodo(deslocarAno(E.de, -1), deslocarAno(E.ate, -1));
+  var ant = periodoAnterior(E.de, E.ate);
+  var anoAnt = { de: deslocarAno(E.de, -1), ate: deslocarAno(E.ate, -1) };
 
   var completos = serie.filter(function (s) { return !mesParcial(s.mes); });
   var base = completos.length ? completos : serie;
@@ -1008,9 +1104,16 @@ function paginaGeral(C) {
   var sub = el("div", "sub");
   sub.innerHTML = "<b>" + fInt(K.ped) + "</b> reposições · " + fInt(K.sku) + " SKU · ticket médio <b>" + fBRL(K.ped ? K.v / K.ped : 0) + "</b>";
   hc.appendChild(sub);
-  var dl = el("div", "sub"); dl.style.marginTop = "12px";
-  dl.appendChild(delta(K.v, vAnt, "mesmo período de " + (+anoFim - 1)));
-  hc.appendChild(dl);
+  /* etiqueta curta de cada comparação; as datas exatas ficam no tooltip */
+  var rotAnt = rotPeriodo(ant.de, ant.ate);
+  if (rotAnt.length > 24) rotAnt = "período anterior";
+  var mesmoMes = E.de.slice(0, 7) === E.ate.slice(0, 7) && E.de.slice(8) === "01";
+  var rotAno = mesmoMes ? fMesAno(anoAnt.de.slice(0, 7))
+             : E.de.slice(0, 4) === E.ate.slice(0, 4) ? "mesmo período de " + (+anoFim - 1) : "mesmo período do ano anterior";
+  var comps = el("div", "comps");
+  comps.appendChild(comparacao("Período anterior", K, ant, rotAnt));
+  comps.appendChild(comparacao("Ano anterior", K, anoAnt, rotAno));
+  hc.appendChild(comps);
   hc.appendChild(el("div", "ver", "Abrir no Detalhe ↗"));
   ligarClique(hc, function () { detalhar(null, [COL_DET.valor, -1]); });
   heroi.appendChild(hc);
@@ -1523,12 +1626,17 @@ function construirFiltros() {
   var fd = el("div", "fdatas");
   REF.de = el("input"); REF.de.type = "date"; REF.de.min = MIND; REF.de.max = MAXD; REF.de.title = "Início do período";
   REF.ate = el("input"); REF.ate.type = "date"; REF.ate.min = MIND; REF.ate.max = MAXD; REF.ate.title = "Fim do período";
-  function mudouData() {
+  /* mexeu no INÍCIO além do fim → o fim acompanha; mexeu no FIM antes do início → o início acompanha.
+     (Trocar um pelo outro, como era, fazia "01/01 a 31/01" virar "31/01 a 01/02" ao escolher fevereiro.) */
+  function mudouData(qual) {
     var a = REF.de.value || MIND, b = REF.ate.value || MAXD;
-    if (a > b) { var t = a; a = b; b = t; }
+    if (a < MIND) a = MIND;
+    if (b > MAXD) b = MAXD;
+    if (a > b) { if (qual === "de") b = a; else a = b; }
     E.de = a; E.ate = b; E.preset = ""; sincronizar(); desenhar();
   }
-  REF.de.addEventListener("change", mudouData); REF.ate.addEventListener("change", mudouData);
+  REF.de.addEventListener("change", function () { mudouData("de"); });
+  REF.ate.addEventListener("change", function () { mudouData("ate"); });
   fd.appendChild(REF.de); fd.appendChild(el("span", "ate", "até")); fd.appendChild(REF.ate);
   gp.appendChild(fd);
   f.appendChild(gp);

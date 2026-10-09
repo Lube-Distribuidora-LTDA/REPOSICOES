@@ -69,6 +69,21 @@ def _atualizar_cache(conn_pg) -> None:
         log.warning("  nao consegui atualizar o cache do painel: %s", exc)
 
 
+def _dizer_ate_quando(conn_pg) -> None:
+    """Uma linha de verdade no fim da carga: ate que dia o painel passou a ter reposicao.
+    Quem roda o ATUALIZAR AGORA.bat le isto, sem precisar abrir o banco."""
+    try:
+        with conn_pg.cursor() as cur:
+            cur.execute("SELECT MAX(data), COUNT(DISTINCT numped) FROM reposicao.fato_item")
+            ultimo, pedidos = cur.fetchone()
+        conn_pg.rollback()
+        log.info("PAINEL ATUALIZADO: reposicoes ate %s (%s pedidos no banco).",
+                 ultimo.strftime("%d/%m/%Y") if ultimo else "?", _formatar(pedidos))
+    except Exception as exc:  # noqa: BLE001
+        conn_pg.rollback()
+        log.warning("  nao consegui ler ate quando o painel esta atualizado: %s", exc)
+
+
 def main() -> int:
     args = _argumentos()
     bi.carregar_env()
@@ -100,7 +115,8 @@ def main() -> int:
     resultados: list[tuple[str, str, int | None, float]] = []
 
     try:
-        with bi.conectar_oracle(cfg_ora) as conn_ora, bi.conectar_supabase(cfg_pg) as conn_pg:
+        with bi.conectar_oracle(cfg_ora) as conn_ora, bi.conectar_supabase(cfg_pg) as conn_pg, \
+             bi.tranca_de_carga(conn_pg, "carga"):
             for consulta in consultas:
                 relogio = bi.cronometro()
                 log.info("=" * 70)
@@ -124,6 +140,7 @@ def main() -> int:
 
             log.info("=" * 70)
             _atualizar_cache(conn_pg)
+            _dizer_ate_quando(conn_pg)
 
             log.info("RESUMO DA CARGA")
             log.info("%-20s %-6s %12s %9s", "CONSULTA", "STATUS", "LINHAS", "TEMPO")
@@ -131,6 +148,11 @@ def main() -> int:
                 log.info("%-20s %-6s %12s %8.1fs", nome, status, _formatar(linhas), segundos)
             log.info("=" * 70)
 
+    except bi.CargaJaRodando as aviso:
+        # Nao e erro: e a tranca fazendo o trabalho dela. Sair com 0 evita que o
+        # Agendador fique reiniciando uma tarefa que esta certa em nao rodar.
+        log.warning("%s", aviso)
+        return 0
     except Exception:
         log.exception("Nao consegui nem abrir as conexoes — nada foi carregado.")
         return 1

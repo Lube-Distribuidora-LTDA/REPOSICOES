@@ -22,8 +22,9 @@ maquina continua com a versao antiga.
  2 - SISTEMA REPOSICOES
 ---------------------------------------------------------------------------
  Leva as rotinas 8352 (Pedido de Reposicao) e 8353 (Relatorio Geral de
- Chamados) do WinThor para o painel da internet. A carga inteira leva uns 10
- segundos e roda sozinha pelo Agendador de Tarefas.
+ Chamados) do WinThor para o painel da internet. A carga leva de uns 10
+ segundos a alguns minutos (quem decide e o banco) e roda sozinha pelo
+ Agendador de Tarefas.
 
  sync_reposicao.py ........... o programa principal.
  consultas_reposicao.py ...... as 3 consultas SQL e a leitura da NF de
@@ -34,6 +35,9 @@ maquina continua com a versao antiga.
                                ele nunca abrir frio (le PAINEL_URL do ENV). O
                                resultado de cada chamada fica em
                                aquecer_painel.log.
+ bi_comum.py ................. infraestrutura comum aos BIs, com a TRANCA de
+                               carga: duas cargas ao mesmo tempo nao se
+                               atropelam, a segunda avisa e sai.
  executar.py ................. inicializador a prova de silencio: se algo
                                quebrar antes do log existir, o motivo vai
                                para falha_inicial.log.
@@ -45,6 +49,17 @@ maquina continua com a versao antiga.
                                tarefa "Reposicoes - Sync": 07:35, 09:35,
                                11:35, 13:35, 15:35, 17:35 e 22:35, e a tarefa
                                "Reposicoes - Aquecer painel": de 5 em 5 minutos.
+
+---------------------------------------------------------------------------
+ ATUALIZAR AGORA.bat  (fica ao lado do INSTALAR TUDO.bat)
+---------------------------------------------------------------------------
+ Duplo clique, na SRV-IA, quando precisar do dado novo ja: traz o ETL mais
+ novo da pasta de rede, roda UMA carga, chama o painel publicado e mostra na
+ tela o que aconteceu. NAO cria nem muda tarefa agendada (isso e o INSTALAR
+ TUDO.bat, uma vez so). Se a carga agendada estiver rodando, a tranca do
+ banco faz a manual esperar de fora. Depois da carga o painel mostra o dado
+ novo em ate 5 minutos; para ver na hora, Shift+clique em Atualizar no painel.
+ Em outra maquina que nao a SRV-IA ele pede para digitar SIM.
 
 ---------------------------------------------------------------------------
  COMO SABER SE A CARGA ENTROU

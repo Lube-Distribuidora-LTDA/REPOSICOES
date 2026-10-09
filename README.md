@@ -88,6 +88,7 @@ etl/                       pipeline Python (roda na rede do WinThor)
   diagnostico_reposicao.py roda tudo SEM gravar e confere o recorte de 2026 contra a planilha
   executar.py              inicializador à prova de silêncio (usado pelo Agendador)
   aquecer_painel.py        chama o painel publicado de 5 em 5 minutos para ele nunca abrir frio
+  ATUALIZAR AGORA.bat      duplo clique na SRV-IA: copia o ETL mais novo, roda UMA carga, aquece o painel e mostra o resultado
   instalar_e_agendar.ps1   instala em C:\BI\REPOSICOES e cria a tarefa
 web/                       painel (estático + 1 função serverless)
   api/dados.js             chama reposicao.painel_dados()
@@ -112,6 +113,7 @@ python etl\sync_reposicao.py
 
 # 3. agendar (uma vez; roda aos :35 de 07:35 a 17:35 de 2 em 2 horas, e 22:35)
 #    duplo clique em INSTALAR TUDO.bat na pasta de rede
+#    (so na SRV-IA; para atualizar o dado na hora, sem agendar: ATUALIZAR AGORA.bat)
 
 # 4. ver o painel no seu computador, antes de publicar (usa o ENV do ETL, sem imprimir a senha)
 cd web
